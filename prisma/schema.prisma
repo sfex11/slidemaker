@@ -1,0 +1,176 @@
+// Prisma 스키마 - 슬라이드 SaaS
+// 데이터베이스: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// 사용자
+// ============================================
+model User {
+  id            String         @id @default(cuid())
+  email         String         @unique
+  name          String?
+  image         String?
+  emailVerified DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  // 관계
+  accounts      Account[]
+  sessions      Session[]
+  projects      Project[]
+  templates     Template[]
+  subscription  Subscription?
+
+  @@map("users")
+}
+
+// OAuth 계정 (NextAuth)
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+// 세션 (NextAuth)
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+// 인증 토큰 (NextAuth)
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ============================================
+// 프로젝트 (슬라이드 덱)
+// ============================================
+model Project {
+  id          String    @id @default(cuid())
+  name        String
+  description String?
+  thumbnail   String?   // 썸네일 이미지 URL
+  isPublic    Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // 관계
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  slides      Slide[]
+  exports     Export[]
+
+  @@map("projects")
+}
+
+// ============================================
+// 슬라이드
+// ============================================
+model Slide {
+  id        String   @id @default(cuid())
+  order     Int      // 슬라이드 순서
+  type      String   // title, card-grid, comparison, timeline, quote, table
+  content   Json     // 슬라이드 내용 (JSON)
+  notes     String?  // 발표자 노트
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // 관계
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, order])
+  @@map("slides")
+}
+
+// ============================================
+// 템플릿
+// ============================================
+model Template {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  config      Json     // 테마 변수, 폰트 설정 등
+  thumbnail   String?  // 미리보기 이미지
+  isPublic    Boolean  @default(false)
+  isPremium   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // 관계
+  authorId String
+  author   User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@map("templates")
+}
+
+// ============================================
+// 내보내기 기록
+// ============================================
+model Export {
+  id        String   @id @default(cuid())
+  format    String   // html, pdf, pptx, png
+  url       String   // 다운로드 URL
+  status    String   @default("pending") // pending, processing, completed, failed
+  createdAt DateTime @default(now())
+
+  // 관계
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("exports")
+}
+
+// ============================================
+// 구독
+// ============================================
+model Subscription {
+  id                   String    @id @default(cuid())
+  plan                 String    @default("free") // free, pro, team
+  status               String    @default("active") // active, canceled, past_due
+  stripeCustomerId     String?   @unique
+  stripeSubscriptionId String?   @unique
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean   @default(false)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  // 관계
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
