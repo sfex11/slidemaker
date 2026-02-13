@@ -5,10 +5,13 @@ import { NextResponse } from "next/server";
  * 인증 미들웨어
  *
  * 보호된 라우트:
+ * - / (루트) - 대시보드
  * - /dashboard/* - 대시보드
  * - /projects/* - 프로젝트 관리
  * - /settings/* - 사용자 설정
  * - /api/protected/* - 보호된 API
+ * - /create - 슬라이드 생성
+ * - /preview - 슬라이드 미리보기
  */
 
 // 보호된 경로 패턴
@@ -17,11 +20,12 @@ const protectedRoutes = [
   "/projects",
   "/settings",
   "/api/protected",
+  "/create",
+  "/preview",
 ];
 
 // 인증 없이 접근 가능한 경로
 const publicRoutes = [
-  "/",
   "/login",
   "/signup",
   "/auth/error",
@@ -31,6 +35,9 @@ const publicRoutes = [
 export default auth((req) => {
   const { nextUrl } = req;
   const isLoggedIn = !!req.auth;
+
+  // 루트 경로도 보호 (대시보드)
+  const isRootPath = nextUrl.pathname === "/";
 
   // 현재 경로가 보호된 경로인지 확인
   const isProtectedRoute = protectedRoutes.some((route) =>
@@ -52,7 +59,7 @@ export default auth((req) => {
   }
 
   // 보호된 경로에 로그인 없이 접근 시 로그인 페이지로 리다이렉트
-  if (isProtectedRoute && !isLoggedIn) {
+  if ((isProtectedRoute || isRootPath) && !isLoggedIn) {
     const loginUrl = new URL("/login", nextUrl.origin);
     // 로그인 후 원래 페이지로 돌아가기 위해 callbackUrl 저장
     loginUrl.searchParams.set("callbackUrl", nextUrl.pathname);

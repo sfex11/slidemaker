@@ -17,6 +17,7 @@ model User {
   id            String         @id @default(cuid())
   email         String         @unique
   name          String?
+  password      String?        // 이메일/비밀번호 로그인용 (해시됨)
   image         String?
   emailVerified DateTime?
   createdAt     DateTime       @default(now())
