@@ -10,7 +10,7 @@ import type { SlideType } from "@/types/slide";
  */
 export interface SlideGenerationRequest {
   content: string;
-  source: "url" | "markdown" | "text";
+  source: "url" | "markdown" | "text" | "pdf";
   options?: SlideGenerationOptions;
 }
 
@@ -114,22 +114,31 @@ ${langInstruction}
  */
 function getUserPrompt(
   content: string,
-  source: "url" | "markdown" | "text",
+  source: "url" | "markdown" | "text" | "pdf",
   options: SlideGenerationOptions
 ): string {
   const language = options.language || "ko";
-  const sourceDescription =
-    source === "url"
-      ? language === "ko"
-        ? "다음은 웹 페이지에서 추출한 콘텐츠입니다."
-        : "The following content was extracted from a web page."
-      : source === "markdown"
-        ? language === "ko"
-          ? "다음은 마크다운 형식의 콘텐츠입니다."
-          : "The following content is in markdown format."
-        : language === "ko"
-          ? "다음은 텍스트 콘텐츠입니다."
-          : "The following is text content.";
+
+  const sourceDescriptions: Record<typeof source, { ko: string; en: string }> = {
+    url: {
+      ko: "다음은 웹 페이지에서 추출한 콘텐츠입니다.",
+      en: "The following content was extracted from a web page.",
+    },
+    markdown: {
+      ko: "다음은 마크다운 형식의 콘텐츠입니다.",
+      en: "The following content is in markdown format.",
+    },
+    text: {
+      ko: "다음은 텍스트 콘텐츠입니다.",
+      en: "The following is text content.",
+    },
+    pdf: {
+      ko: "다음은 PDF 문서에서 추출한 콘텐츠입니다.",
+      en: "The following content was extracted from a PDF document.",
+    },
+  };
+
+  const sourceDescription = sourceDescriptions[source][language];
 
   const instructionText =
     language === "ko"
