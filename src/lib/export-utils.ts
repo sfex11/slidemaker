@@ -723,6 +723,6 @@ export async function generatePdfFromHtml(html: string): Promise<Buffer> {
 export function generateExportUrl(exportId: string, format: string): string {
   // 실제 운영에서는 CDN이나 S3 URL을 반환
   // 개발 단계에서는 API 엔드포인트 사용
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3001";
   return `${baseUrl}/api/exports/${exportId}/download?format=${format}`;
 }
