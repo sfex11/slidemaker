@@ -1,0 +1,39 @@
+name: Deploy to Oracle Server
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: 129.154.63.231
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
+            cd ~/slidemaker
+
+            # 최신 코드 가져오기
+            git pull origin master
+
+            # 의존성 설치
+            npm ci --production=false
+
+            # Prisma 클라이언트 생성
+            npx prisma generate
+
+            # 빌드
+            npm run build
+
+            # PM2로 재시작 (없으면 새로 시작)
+            pm2 restart slidemaker || pm2 start npm --name slidemaker -- start
+            pm2 save
