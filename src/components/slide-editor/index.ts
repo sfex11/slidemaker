@@ -4,3 +4,6 @@
 
 export { SortableSlideItem } from "./sortable-slide-item";
 export { SortableSlideList } from "./sortable-slide-list";
+export { Canvas } from "./canvas";
+export { PropertiesPanel } from "./properties-panel";
+export { Toolbar } from "./toolbar";
