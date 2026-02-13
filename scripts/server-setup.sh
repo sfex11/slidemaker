@@ -20,7 +20,7 @@ git clone https://github.com/sfex11/slidemaker.git
 cd slidemaker
 
 echo "=== 의존성 설치 ==="
-npm ci --production=false
+npm ci
 
 echo "=== Prisma 설정 ==="
 npx prisma generate

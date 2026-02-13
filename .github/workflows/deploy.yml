@@ -16,6 +16,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
+          command_timeout: 10m
           script: |
             export NVM_DIR="$HOME/.nvm"
             [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
@@ -26,7 +27,7 @@ jobs:
             git pull origin master
 
             # 의존성 설치
-            npm ci --production=false
+            npm ci
 
             # Prisma 클라이언트 생성
             npx prisma generate
