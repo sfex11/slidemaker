@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
 import { ThemeProvider as NextThemesProvider, useTheme as useNextThemes } from 'next-themes';
 import { Theme, ThemeVariables, ThemeMode, ThemeContextValue } from '@/types/theme';
 import { themes, getThemeById, themeVariablesToCss } from '@/lib/themes';
@@ -73,20 +73,20 @@ export function ThemeProvider({
   /**
    * 테마 변경 함수
    */
-  const setTheme = (themeId: string) => {
+  const setTheme = useCallback((themeId: string) => {
     const theme = getThemeById(themeId);
     if (theme) {
       setCurrentThemeId(themeId);
       localStorage.setItem(`${storageKey}-id`, themeId);
     }
-  };
+  }, [storageKey]);
 
   /**
    * 모드 변경 함수
    */
-  const setMode = (newMode: ThemeMode) => {
+  const setMode = useCallback((newMode: ThemeMode) => {
     setNextTheme(newMode);
-  };
+  }, [setNextTheme]);
 
   // 테마 ID를 localStorage에 저장
   useEffect(() => {
@@ -113,7 +113,7 @@ export function ThemeProvider({
       setMode,
       availableThemes: themes,
     }),
-    [currentTheme, mode, resolvedTheme, themeVariables, defaultMode]
+    [currentTheme, mode, resolvedTheme, themeVariables, defaultMode, setTheme, setMode]
   );
 
   return (

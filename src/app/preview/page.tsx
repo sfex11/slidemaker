@@ -2,10 +2,10 @@
 
 /**
  * 슬라이드 미리보기 페이지
- * 생성된 슬라이드를 미리보기합니다.
+ * 생성된 슬라이드를 미리보기하고 드래그 앤 드롭으로 순서를 변경할 수 있습니다.
  */
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, Suspense, useCallback, useSyncExternalStore } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronLeft, ChevronRight, Download, Save, ArrowLeft, Loader2 } from "lucide-react";
@@ -18,29 +18,91 @@ import {
   QuoteSlide,
   TableSlide,
 } from "@/components/slides";
+import { SortableSlideList } from "@/components/slide-editor";
 import type { SlideProps } from "@/types/slide";
+
+// 슬라이드 파싱 유틸리티 함수
+function parseSlidesFromParams(searchParams: URLSearchParams): {
+  slides: SlideProps[];
+  projectId: string | null;
+} {
+  const slidesParam = searchParams.get("slides");
+  const projectIdParam = searchParams.get("projectId");
+  let parsedSlides: SlideProps[] = [];
+
+  if (slidesParam) {
+    try {
+      const parsed = JSON.parse(decodeURIComponent(slidesParam));
+      parsedSlides = Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      console.error("슬라이드 파싱 오류:", e);
+    }
+  }
+
+  return { slides: parsedSlides, projectId: projectIdParam };
+}
+
+// 클라이언트 전용 스토어 구독 훅
+function useIsClient() {
+  return useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false
+  );
+}
 
 function PreviewPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [slides, setSlides] = useState<SlideProps[]>([]);
+  const isClient = useIsClient();
+
+  // 초기 데이터 파싱
+  const { slides: initialSlides, projectId: initialProjectId } = parseSlidesFromParams(searchParams);
+
+  const [slides, setSlides] = useState<SlideProps[]>(initialSlides);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [isLoading, setIsLoading] = useState(true);
+  const projectId = initialProjectId;
 
-  useEffect(() => {
-    const slidesParam = searchParams.get("slides");
-    if (slidesParam) {
-      try {
-        const parsed = JSON.parse(decodeURIComponent(slidesParam));
-        setSlides(Array.isArray(parsed) ? parsed : []);
-      } catch (e) {
-        console.error("슬라이드 파싱 오류:", e);
-      }
+  const currentSlide = slides[currentIndex];
+  const canGoPrev = currentIndex > 0;
+  const canGoNext = currentIndex < slides.length - 1;
+
+  const handlePrev = useCallback(() => {
+    if (currentIndex > 0) {
+      setCurrentIndex(currentIndex - 1);
     }
-    setIsLoading(false);
-  }, [searchParams]);
+  }, [currentIndex]);
 
-  if (isLoading) {
+  const handleNext = useCallback(() => {
+    if (currentIndex < slides.length - 1) {
+      setCurrentIndex(currentIndex + 1);
+    }
+  }, [currentIndex, slides.length]);
+
+  // 슬라이드 재정렬 핸들러
+  const handleReorder = useCallback((newSlides: SlideProps[]) => {
+    setSlides(newSlides);
+    // 현재 선택된 슬라이드가 여전히 존재하는지 확인
+    setCurrentIndex((prevIndex) => {
+      if (prevIndex >= newSlides.length) {
+        return Math.max(0, newSlides.length - 1);
+      }
+      return prevIndex;
+    });
+  }, []);
+
+  // 키보드 네비게이션
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "ArrowLeft") handlePrev();
+      if (e.key === "ArrowRight") handleNext();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handlePrev, handleNext]);
+
+  // 하이드레이션 전에는 로딩 표시
+  if (!isClient) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div className="text-center">
@@ -66,32 +128,6 @@ function PreviewPageContent() {
       </div>
     );
   }
-
-  const currentSlide = slides[currentIndex];
-  const canGoPrev = currentIndex > 0;
-  const canGoNext = currentIndex < slides.length - 1;
-
-  const handlePrev = () => {
-    if (canGoPrev) {
-      setCurrentIndex(currentIndex - 1);
-    }
-  };
-
-  const handleNext = () => {
-    if (canGoNext) {
-      setCurrentIndex(currentIndex + 1);
-    }
-  };
-
-  // 키보드 네비게이션
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "ArrowLeft") handlePrev();
-      if (e.key === "ArrowRight") handleNext();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentIndex]);
 
   // 슬라이드 렌더링
   const renderSlide = (slide: SlideProps) => {
@@ -178,23 +214,15 @@ function PreviewPageContent() {
         </Button>
       </div>
 
-      {/* 슬라이드 썸네일 */}
-      <div className="mt-6 flex justify-center gap-2 overflow-x-auto pb-2">
-        {slides.map((slide, index) => (
-          <button
-            key={slide.id || index}
-            className={`flex-shrink-0 h-16 w-24 rounded border-2 transition-all ${
-              index === currentIndex
-                ? "border-primary ring-2 ring-primary/20"
-                : "border-border hover:border-primary/50"
-            }`}
-            onClick={() => setCurrentIndex(index)}
-          >
-            <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-              {index + 1}
-            </div>
-          </button>
-        ))}
+      {/* 슬라이드 썸네일 (드래그 앤 드롭 지원) */}
+      <div className="mt-6">
+        <SortableSlideList
+          slides={slides}
+          currentIndex={currentIndex}
+          onSlideSelect={setCurrentIndex}
+          onReorder={handleReorder}
+          projectId={projectId || undefined}
+        />
       </div>
     </div>
   );

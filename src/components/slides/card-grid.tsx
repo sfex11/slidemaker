@@ -38,20 +38,41 @@ const cardVariants: Variants = {
   }),
 };
 
-// 아이콘 이름으로 동적으로 아이콘 가져오기
-function getIconComponent(iconName: string | undefined): React.ComponentType<{
+// 동적 아이콘 렌더러 컴포넌트 - 정적으로 정의된 컴포넌트
+function DynamicIcon({
+  iconName,
+  iconComponent,
+  className,
+  style,
+}: {
+  iconName?: string;
+  iconComponent?: React.ComponentType<{ className?: string; style?: React.CSSProperties }>;
   className?: string;
-}> | null {
-  if (!iconName) return null;
+  style?: React.CSSProperties;
+}) {
+  // 전달받은 컴포넌트가 있으면 사용
+  if (iconComponent) {
+    const IconComp = iconComponent;
+    return <IconComp className={className} style={style} aria-hidden="true" />;
+  }
 
-  // PascalCase로 변환 (예: "arrow-right" -> "ArrowRight")
-  const pascalCase = iconName
-    .split("-")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join("");
+  // 아이콘 이름으로 렌더링
+  if (iconName) {
+    const pascalCase = iconName
+      .split("-")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join("");
 
-  const Icon = (LucideIcons as Record<string, unknown>)[pascalCase];
-  return typeof Icon === "function" ? (Icon as React.ComponentType<{ className?: string }>) : null;
+    const LucideIcon = (LucideIcons as Record<string, unknown>)[pascalCase] as
+      | React.ComponentType<{ className?: string; style?: React.CSSProperties }>
+      | undefined;
+
+    if (LucideIcon) {
+      return <LucideIcon className={className} style={style} aria-hidden="true" />;
+    }
+  }
+
+  return null;
 }
 
 // 개별 카드 컴포넌트
@@ -62,8 +83,7 @@ function Card({
   card: CardItem;
   index: number;
 }) {
-  // 아이콘 컴포넌트 가져오기
-  const IconComponent = card.icon || getIconComponent(card.iconName);
+  const hasIcon = card.icon || card.iconName;
 
   return (
     <motion.div
@@ -81,17 +101,18 @@ function Card({
       }}
     >
       {/* 아이콘 */}
-      {IconComponent && (
+      {hasIcon && (
         <div
           className="mb-4 flex h-14 w-14 items-center justify-center rounded-full"
           style={{
             backgroundColor: "var(--slide-accent, #3b82f6)",
           }}
         >
-          <IconComponent
+          <DynamicIcon
+            iconName={card.iconName}
+            iconComponent={card.icon}
             className="h-7 w-7"
             style={{ color: "var(--slide-bg, #ffffff)" }}
-            aria-hidden="true"
           />
         </div>
       )}

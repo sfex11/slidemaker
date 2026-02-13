@@ -28,6 +28,8 @@ import type {
 } from "./markdown/parser";
 
 import type { SlideMappingResult } from "./markdown/slide-mapper";
+import { parseMarkdown } from "./markdown/parser";
+import { mapTokensToSlides } from "./markdown/slide-mapper";
 
 // 고유 ID 생성 함수
 function generateId(): string {
@@ -430,10 +432,6 @@ export function createSlideDataFromMappings(
 export function generateSlidesFromMarkdown(
   markdown: string
 ): SlideProps[] {
-  // 순환 참조 방지를 위해 동적 import 대신 직접 처리
-  const { parseMarkdown } = require("./markdown/parser");
-  const { mapTokensToSlides } = require("./markdown/slide-mapper");
-
   const parseResult = parseMarkdown(markdown);
   const mappingResults = mapTokensToSlides(parseResult.tokens);
 
