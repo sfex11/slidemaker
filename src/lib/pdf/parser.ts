@@ -3,7 +3,7 @@
  * PDF 파일에서 텍스트를 추출하고 마크다운으로 변환합니다.
  */
 
-import pdfParse from "pdf-parse";
+import { PDFParse } from "pdf-parse";
 
 /**
  * PDF 파싱 결과
@@ -63,26 +63,35 @@ export async function parsePdfBuffer(
       };
     }
 
-    // pdf-parse 옵션
-    const parseOptions: pdfParse.Options = {
-      max: maxPages,
-    };
+    // pdf-parse v2 API: PDFParse 클래스 사용
+    const parser = new PDFParse({ data: buffer });
 
-    const data = await pdfParse(buffer, parseOptions);
+    // 텍스트 추출 (maxPages 제한)
+    const textResult = await parser.getText({ first: maxPages });
+    const text = textResult.text;
+    const pageCount = textResult.total;
 
     // 메타데이터 추출
     const info: PdfInfo = {};
-    if (data.info) {
-      info.title = data.info.Title || undefined;
-      info.author = data.info.Author || undefined;
-      info.subject = data.info.Subject || undefined;
-      info.creator = data.info.Creator || undefined;
-      info.producer = data.info.Producer || undefined;
-      info.creationDate = data.info.CreationDate || undefined;
+    try {
+      const infoResult = await parser.getInfo();
+      if (infoResult.info) {
+        info.title = infoResult.info.Title || undefined;
+        info.author = infoResult.info.Author || undefined;
+        info.subject = infoResult.info.Subject || undefined;
+        info.creator = infoResult.info.Creator || undefined;
+        info.producer = infoResult.info.Producer || undefined;
+        info.creationDate = infoResult.info.CreationDate || undefined;
+      }
+    } catch {
+      // 메타데이터 추출 실패는 무시
     }
 
+    // 파서 리소스 정리
+    await parser.destroy();
+
     // 텍스트 정리
-    const cleanedText = cleanPdfText(data.text);
+    const cleanedText = cleanPdfText(text);
 
     // 제목 추출
     const title = info.title || extractTitleFromText(cleanedText);
@@ -94,7 +103,7 @@ export async function parsePdfBuffer(
       title,
       text: cleanedText,
       markdown,
-      pageCount: data.numpages,
+      pageCount,
       info,
     };
   } catch (error) {
