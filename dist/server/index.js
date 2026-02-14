@@ -30839,7 +30839,7 @@ import path from "path";
 var __dirname = "/Users/chulhyunhwang/Documents/claude/slide_saas/saas/src/server";
 var app = import_express.default();
 var prisma = new import_client.PrismaClient;
-var PORT = process.env.PORT || 3001;
+var PORT = process.env.PORT || 8000;
 var isProduction = false;
 var clientPath = isProduction ? path.join(process.cwd(), "dist/client") : path.join(__dirname, "../../dist/client");
 app.use(import_cors.default());

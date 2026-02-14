@@ -6,7 +6,7 @@ import path from 'path'
 
 const app = express()
 const prisma = new PrismaClient()
-const PORT = process.env.PORT || 3001
+const PORT = process.env.PORT || 8000
 
 // 현재 디렉토리 기준 경로 설정
 const isProduction = process.env.NODE_ENV === 'production'

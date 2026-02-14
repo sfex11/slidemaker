@@ -10,7 +10,7 @@ ExecStart=/home/ubuntu/.bun/bin/bun run dist/server/index.js
 Restart=always
 RestartSec=10
 Environment=NODE_ENV=production
-Environment=PORT=3001
+Environment=PORT=8000
 
 [Install]
 WantedBy=multi-user.target
