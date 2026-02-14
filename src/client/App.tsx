@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
-import { BrowserRouter, Routes, Route, Link, useLocation, Navigate } from 'react-router-dom'
+import React from 'react'
+import { BrowserRouter, Routes, Route, Link, useLocation, Navigate, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { LayoutDashboard, FolderOpen, Palette, Menu, X, LogOut } from 'lucide-react'
+import { LayoutDashboard, FolderOpen, Palette, Menu, X, LogOut, Globe, FileText, Type, Loader2, Plus, Trash2, ExternalLink } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { SlideEditor } from '@/components/slide-editor'
@@ -13,7 +14,22 @@ const AuthContext = React.createContext<{
   logout: () => void
 }>({ user: null, login: async () => false, logout: () => {} })
 
-import React from 'react'
+// 프로젝트 타입
+interface Slide {
+  id: string
+  type: string
+  content: Record<string, unknown>
+  order: number
+}
+
+interface Project {
+  id: string
+  name: string
+  description?: string
+  slides: Slide[]
+  createdAt: string
+  updatedAt: string
+}
 
 // 로그인 페이지
 function LoginPage() {
@@ -97,30 +113,739 @@ function LoginPage() {
   )
 }
 
+// 새 프로젝트 생성 모달
+function NewProjectModal({ isOpen, onClose, onSuccess }: {
+  isOpen: boolean
+  onClose: () => void
+  onSuccess: (project: Project) => void
+}) {
+  const [mode, setMode] = useState<'url' | 'markdown' | 'text'>('url')
+  const [url, setUrl] = useState('')
+  const [markdown, setMarkdown] = useState('')
+  const [text, setText] = useState('')
+  const [name, setName] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState('')
+  const navigate = useNavigate()
+  const { user } = React.useContext(AuthContext)
+
+  const handleSubmit = async () => {
+    setError('')
+    setIsLoading(true)
+
+    try {
+      const token = localStorage.getItem('token')
+      const endpoints = {
+        url: '/api/generate/from-url',
+        markdown: '/api/generate/from-markdown',
+        text: '/api/generate/from-text'
+      }
+      const bodies = {
+        url: { url, name: name || undefined },
+        markdown: { markdown, name: name || undefined },
+        text: { text, name: name || undefined }
+      }
+
+      const res = await fetch(endpoints[mode], {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(bodies[mode])
+      })
+
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || '생성 실패')
+      }
+
+      const data = await res.json()
+      onSuccess(data.project)
+      onClose()
+      navigate(`/projects/${data.project.id}`)
+    } catch (err: any) {
+      setError(err.message || '생성 실패')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  if (!isOpen) return null
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden"
+      >
+        <div className="p-6 border-b">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-bold">새 프로젝트 만들기</h2>
+            <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-lg">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* 모드 탭 */}
+          <div className="flex gap-2 mt-4">
+            {[
+              { id: 'url', label: 'URL', icon: Globe },
+              { id: 'markdown', label: '마크다운', icon: FileText },
+              { id: 'text', label: '텍스트', icon: Type },
+            ].map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                onClick={() => setMode(id as any)}
+                className={cn(
+                  "flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors",
+                  mode === id
+                    ? "bg-blue-600 text-white"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                )}
+              >
+                <Icon className="w-4 h-4" />
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="p-6 space-y-4 overflow-y-auto max-h-[50vh]">
+          {error && (
+            <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm">
+              {error}
+            </div>
+          )}
+
+          {/* 프로젝트 이름 */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              프로젝트 이름 (선택)
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500"
+              placeholder="자동 생성됨"
+            />
+          </div>
+
+          {/* URL 입력 */}
+          {mode === 'url' && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                웹페이지 URL
+              </label>
+              <input
+                type="url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500"
+                placeholder="https://example.com/article"
+              />
+              <p className="text-xs text-slate-400 mt-2">
+                웹페이지의 내용을 분석하여 자동으로 슬라이드를 생성합니다.
+              </p>
+            </div>
+          )}
+
+          {/* 마크다운 입력 */}
+          {mode === 'markdown' && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                마크다운 내용
+              </label>
+              <textarea
+                value={markdown}
+                onChange={(e) => setMarkdown(e.target.value)}
+                className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                rows={12}
+                placeholder="# 제목
+
+## 섹션 1
+- 내용 1
+- 내용 2
+
+## 섹션 2
+..."
+              />
+              <p className="text-xs text-slate-400 mt-2">
+                마크다운 형식의 텍스트를 슬라이드로 변환합니다.
+              </p>
+            </div>
+          )}
+
+          {/* 텍스트 입력 */}
+          {mode === 'text' && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                텍스트 내용
+              </label>
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500"
+                rows={12}
+                placeholder="프레젠테이션으로 만들고 싶은 내용을 자유롭게 입력하세요..."
+              />
+              <p className="text-xs text-slate-400 mt-2">
+                일반 텍스트를 AI가 분석하여 슬라이드로 변환합니다.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="p-6 border-t bg-slate-50 flex justify-end gap-3">
+          <Button variant="outline" onClick={onClose}>
+            취소
+          </Button>
+          <Button
+            onClick={handleSubmit}
+            disabled={isLoading || (mode === 'url' && !url) || (mode === 'markdown' && !markdown) || (mode === 'text' && !text)}
+          >
+            {isLoading ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                생성 중...
+              </>
+            ) : (
+              <>
+                <Plus className="w-4 h-4 mr-2" />
+                슬라이드 생성
+              </>
+            )}
+          </Button>
+        </div>
+      </motion.div>
+    </div>
+  )
+}
+
 // 대시보드 페이지
 function DashboardPage() {
+  const [projects, setProjects] = useState<Project[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [isModalOpen, setIsModalOpen] = useState(false)
+  const navigate = useNavigate()
+
+  const fetchProjects = async () => {
+    const token = localStorage.getItem('token')
+    try {
+      const res = await fetch('/api/projects', {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      const data = await res.json()
+      setProjects(data.projects || [])
+    } catch (err) {
+      console.error('프로젝트 로드 실패:', err)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchProjects()
+  }, [])
+
+  const handleDeleteProject = async (id: string) => {
+    if (!confirm('이 프로젝트를 삭제하시겠습니까?')) return
+
+    const token = localStorage.getItem('token')
+    try {
+      await fetch(`/api/projects/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      setProjects(projects.filter(p => p.id !== id))
+    } catch (err) {
+      console.error('삭제 실패:', err)
+    }
+  }
+
   return (
     <div className="p-8">
-      <h2 className="text-2xl font-bold mb-4">대시보드</h2>
-      <p className="text-muted-foreground mb-6">프로젝트를 선택하거나 새로 만드세요</p>
+      <div className="max-w-6xl mx-auto">
+        <div className="flex items-center justify-between mb-8">
+          <div>
+            <h2 className="text-2xl font-bold">내 프로젝트</h2>
+            <p className="text-slate-500 mt-1">프로젝트를 선택하거나 새로 만드세요</p>
+          </div>
+          <Button size="lg" className="gap-2" onClick={() => setIsModalOpen(true)}>
+            <Plus className="w-5 h-5" />
+            새 프로젝트
+          </Button>
+        </div>
 
-      <Link to="/projects/new">
-        <Button size="lg" className="gap-2">
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          새 프로젝트
-        </Button>
-      </Link>
+        {isLoading ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="w-8 h-8 animate-spin text-slate-400" />
+          </div>
+        ) : projects.length === 0 ? (
+          <div className="text-center py-16 border-2 border-dashed border-slate-200 rounded-xl">
+            <FolderOpen className="w-12 h-12 mx-auto text-slate-300 mb-4" />
+            <p className="text-slate-500 mb-4">아직 프로젝트가 없습니다</p>
+            <Button onClick={() => setIsModalOpen(true)}>
+              <Plus className="w-4 h-4 mr-2" />
+              첫 프로젝트 만들기
+            </Button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {projects.map((project) => (
+              <motion.div
+                key={project.id}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="group bg-white rounded-xl border border-slate-200 overflow-hidden hover:shadow-lg transition-shadow cursor-pointer"
+                onClick={() => navigate(`/projects/${project.id}`)}
+              >
+                <div className="aspect-video bg-gradient-to-br from-slate-100 to-slate-50 flex items-center justify-center">
+                  <div className="text-center">
+                    <div className="text-4xl font-bold text-slate-300 mb-1">
+                      {project.slides.length}
+                    </div>
+                    <div className="text-xs text-slate-400">슬라이드</div>
+                  </div>
+                </div>
+                <div className="p-4">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-semibold text-slate-800 truncate">
+                        {project.name}
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-1">
+                        {new Date(project.updatedAt).toLocaleDateString('ko-KR')}
+                      </p>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleDeleteProject(project.id)
+                      }}
+                      className="p-2 text-slate-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <NewProjectModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        onSuccess={(project) => {
+          setProjects([project, ...projects])
+        }}
+      />
     </div>
   )
 }
 
 // 프로젝트 편집 페이지
 function ProjectPage() {
+  const { id } = useParams<{ id: string }>()
+  const [project, setProject] = useState<Project | null>(null)
+  const [slides, setSlides] = useState<Slide[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    if (id) {
+      fetchProject()
+    }
+  }, [id])
+
+  const fetchProject = async () => {
+    const token = localStorage.getItem('token')
+    try {
+      const res = await fetch(`/api/projects/${id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      if (!res.ok) {
+        navigate('/')
+        return
+      }
+      const data = await res.json()
+      setProject(data.project)
+      setSlides(data.project.slides || [])
+    } catch (err) {
+      console.error('프로젝트 로드 실패:', err)
+      navigate('/')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const updateSlide = async (slideId: string, content: Record<string, unknown>) => {
+    const token = localStorage.getItem('token')
+    try {
+      await fetch(`/api/slides/${slideId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ content })
+      })
+      setSlides(slides.map(s => s.id === slideId ? { ...s, content } : s))
+    } catch (err) {
+      console.error('슬라이드 업데이트 실패:', err)
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-[calc(100vh-64px)]">
+        <Loader2 className="w-8 h-8 animate-spin text-slate-400" />
+      </div>
+    )
+  }
+
+  if (!project) {
+    return (
+      <div className="flex items-center justify-center h-[calc(100vh-64px)]">
+        <p className="text-slate-400">프로젝트를 찾을 수 없습니다</p>
+      </div>
+    )
+  }
+
   return (
     <div className="h-[calc(100vh-64px)]">
-      <SlideEditor />
+      <SlideEditor
+        projectId={project.id}
+        projectName={project.name}
+        slides={slides}
+        onSlideUpdate={updateSlide}
+      />
+    </div>
+  )
+}
+
+import { useParams } from 'react-router-dom'
+
+// 향상된 슬라이드 에디터 Props
+interface SlideEditorProps {
+  projectId: string
+  projectName: string
+  slides: Slide[]
+  onSlideUpdate: (slideId: string, content: Record<string, unknown>) => void
+}
+
+// 향상된 슬라이드 에디터 (기존 컴포넌트 래핑)
+function EnhancedSlideEditor({ projectId, projectName, slides, onSlideUpdate }: SlideEditorProps) {
+  const [selectedSlideId, setSelectedSlideId] = useState<string | null>(slides[0]?.id || null)
+  const [localSlides, setLocalSlides] = useState(slides)
+
+  useEffect(() => {
+    setLocalSlides(slides)
+  }, [slides])
+
+  const selectedSlide = localSlides.find(s => s.id === selectedSlideId)
+
+  const updateSlideContent = (content: Record<string, unknown>) => {
+    if (selectedSlideId) {
+      setLocalSlides(localSlides.map(s => s.id === selectedSlideId ? { ...s, content } : s))
+      onSlideUpdate(selectedSlideId, content)
+    }
+  }
+
+  return (
+    <div className="flex h-full">
+      {/* 왼쪽: 슬라이드 목록 */}
+      <div className="w-72 border-r bg-slate-50 flex flex-col">
+        <div className="p-4 border-b bg-white">
+          <h3 className="font-semibold text-sm text-slate-700">슬라이드</h3>
+          <span className="text-xs text-slate-400">{localSlides.length}개</span>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4">
+          <div className="space-y-2">
+            {localSlides.map((slide, index) => (
+              <div
+                key={slide.id}
+                onClick={() => setSelectedSlideId(slide.id)}
+                className={cn(
+                  "group relative p-3 rounded-lg border-2 cursor-pointer transition-all",
+                  selectedSlideId === slide.id
+                    ? "border-blue-500 bg-blue-50"
+                    : "border-slate-200 hover:border-blue-300 bg-white"
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-400 w-5">{index + 1}</span>
+                  <span className="text-sm font-medium truncate">
+                    {(slide.content.title as string) || slide.type}
+                  </span>
+                </div>
+                <div className="text-xs text-slate-400 mt-1">{slide.type}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* 중앙: 캔버스 */}
+      <div className="flex-1 flex flex-col bg-slate-100">
+        <div className="border-b bg-white px-4 py-2 flex items-center justify-between">
+          <h1 className="text-lg font-semibold">{projectName}</h1>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm">저장</Button>
+            <Button size="sm">내보내기</Button>
+          </div>
+        </div>
+        <div className="flex-1 flex items-center justify-center p-8 overflow-auto">
+          <Canvas slide={selectedSlide} />
+        </div>
+      </div>
+
+      {/* 오른쪽: 속성 패널 */}
+      <div className="w-80 border-l bg-white">
+        <PropertiesPanel
+          slide={selectedSlide}
+          onUpdate={updateSlideContent}
+        />
+      </div>
+    </div>
+  )
+}
+
+// Canvas 컴포넌트 (간단 버전)
+function Canvas({ slide }: { slide?: Slide }) {
+  if (!slide) {
+    return (
+      <div className="flex items-center justify-center h-full bg-slate-100 rounded-xl w-full max-w-4xl aspect-video">
+        <p className="text-slate-400">슬라이드를 선택하세요</p>
+      </div>
+    )
+  }
+
+  const { content } = slide
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.98 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className="w-full max-w-4xl aspect-video rounded-xl overflow-hidden shadow-2xl border border-slate-200 bg-white"
+    >
+      <div className="h-full p-12 flex flex-col justify-center">
+        {slide.type === 'title' && (
+          <div className="text-center">
+            <h1 className="text-4xl font-bold text-slate-900 mb-4">
+              {(content.title as string) || '제목 없음'}
+            </h1>
+            {content.subtitle && (
+              <p className="text-xl text-slate-600">{content.subtitle as string}</p>
+            )}
+          </div>
+        )}
+
+        {slide.type === 'card-grid' && (
+          <>
+            <h2 className="text-2xl font-bold text-slate-900 mb-6 text-center">
+              {(content.title as string) || '카드 그리드'}
+            </h2>
+            <div className="grid grid-cols-3 gap-4">
+              {Array.isArray(content.items) && content.items.map((item: string, i: number) => (
+                <div key={i} className="p-4 bg-slate-50 rounded-lg border text-center">
+                  {item}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {slide.type === 'comparison' && (
+          <>
+            <h2 className="text-2xl font-bold text-slate-900 mb-6 text-center">
+              {(content.title as string) || '비교'}
+            </h2>
+            <div className="grid grid-cols-2 gap-6">
+              <div className="p-4 bg-blue-50 rounded-lg border-2 border-blue-200">
+                <h3 className="font-bold text-blue-700 mb-2">{content.leftTitle as string || 'A'}</h3>
+                <ul className="text-sm space-y-1">
+                  {Array.isArray(content.leftItems) && content.leftItems.map((item: string, i: number) => (
+                    <li key={i}>• {item}</li>
+                  ))}
+                </ul>
+              </div>
+              <div className="p-4 bg-purple-50 rounded-lg border-2 border-purple-200">
+                <h3 className="font-bold text-purple-700 mb-2">{content.rightTitle as string || 'B'}</h3>
+                <ul className="text-sm space-y-1">
+                  {Array.isArray(content.rightItems) && content.rightItems.map((item: string, i: number) => (
+                    <li key={i}>• {item}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </>
+        )}
+
+        {slide.type === 'timeline' && (
+          <>
+            <h2 className="text-2xl font-bold text-slate-900 mb-6 text-center">
+              {(content.title as string) || '타임라인'}
+            </h2>
+            <div className="space-y-3">
+              {Array.isArray(content.items) && content.items.map((item: any, i: number) => (
+                <div key={i} className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center text-sm font-bold">
+                    {i + 1}
+                  </div>
+                  <div className="flex-1 p-3 bg-slate-50 rounded-lg">
+                    <div className="font-medium">{item.title}</div>
+                    <div className="text-sm text-slate-500">{item.description}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {slide.type === 'quote' && (
+          <div className="text-center max-w-2xl mx-auto">
+            <div className="text-6xl text-blue-200 mb-4">"</div>
+            <p className="text-2xl font-medium text-slate-800 mb-4">
+              {(content.quote as string) || '인용문'}
+            </p>
+            {content.author && (
+              <p className="text-slate-500">— {content.author as string}</p>
+            )}
+          </div>
+        )}
+
+        {slide.type === 'table' && (
+          <>
+            <h2 className="text-2xl font-bold text-slate-900 mb-6 text-center">
+              {(content.title as string) || '표'}
+            </h2>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr className="bg-slate-100">
+                    {Array.isArray(content.headers) && content.headers.map((h: string, i: number) => (
+                      <th key={i} className="border p-2 text-left font-semibold">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {Array.isArray(content.rows) && content.rows.map((row: string[], i: number) => (
+                    <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
+                      {row.map((cell, j) => (
+                        <td key={j} className="border p-2">{cell}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        {!['title', 'card-grid', 'comparison', 'timeline', 'quote', 'table'].includes(slide.type) && (
+          <div className="text-center text-slate-400">
+            {slide.type} 슬라이드
+          </div>
+        )}
+      </div>
+    </motion.div>
+  )
+}
+
+// PropertiesPanel 컴포넌트 (간단 버전)
+function PropertiesPanel({ slide, onUpdate }: { slide?: Slide; onUpdate?: (content: Record<string, unknown>) => void }) {
+  const [localContent, setLocalContent] = useState<Record<string, unknown>>({})
+
+  useEffect(() => {
+    if (slide?.content) {
+      setLocalContent({ ...slide.content })
+    }
+  }, [slide])
+
+  if (!slide) {
+    return (
+      <div className="p-4">
+        <p className="text-slate-400 text-sm">슬라이드를 선택하세요</p>
+      </div>
+    )
+  }
+
+  const updateField = (field: string, value: unknown) => {
+    setLocalContent({ ...localContent, [field]: value })
+  }
+
+  const applyChanges = () => {
+    onUpdate?.(localContent)
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="border-b p-4 bg-slate-50">
+        <h2 className="font-semibold">속성 편집</h2>
+        <p className="text-sm text-slate-500">{slide.type}</p>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* 타입별 필드 */}
+        {(slide.type === 'title' || slide.type === 'card-grid' || slide.type === 'comparison' || slide.type === 'timeline' || slide.type === 'quote' || slide.type === 'table') && (
+          <div>
+            <label className="block text-sm font-medium mb-1">제목</label>
+            <input
+              type="text"
+              value={(localContent.title as string) || ''}
+              onChange={(e) => updateField('title', e.target.value)}
+              className="w-full px-3 py-2 border rounded-lg"
+            />
+          </div>
+        )}
+
+        {slide.type === 'title' && (
+          <div>
+            <label className="block text-sm font-medium mb-1">부제목</label>
+            <input
+              type="text"
+              value={(localContent.subtitle as string) || ''}
+              onChange={(e) => updateField('subtitle', e.target.value)}
+              className="w-full px-3 py-2 border rounded-lg"
+            />
+          </div>
+        )}
+
+        {slide.type === 'quote' && (
+          <>
+            <div>
+              <label className="block text-sm font-medium mb-1">인용문</label>
+              <textarea
+                value={(localContent.quote as string) || ''}
+                onChange={(e) => updateField('quote', e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg"
+                rows={3}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">발화자</label>
+              <input
+                type="text"
+                value={(localContent.author as string) || ''}
+                onChange={(e) => updateField('author', e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg"
+              />
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="border-t p-4 bg-slate-50">
+        <Button onClick={applyChanges} className="w-full">
+          변경사항 적용
+        </Button>
+      </div>
     </div>
   )
 }
@@ -281,6 +1006,11 @@ function App() {
               </ProtectedRoute>
             } />
             <Route path="/projects/new" element={
+              <ProtectedRoute>
+                <MainLayout><div className="p-8"><DashboardPage /></div></MainLayout>
+              </ProtectedRoute>
+            } />
+            <Route path="/projects/:id" element={
               <ProtectedRoute>
                 <MainLayout><ProjectPage /></MainLayout>
               </ProtectedRoute>
