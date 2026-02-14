@@ -8,12 +8,19 @@ const app = express()
 const prisma = new PrismaClient()
 const PORT = process.env.PORT || 3001
 
+// 현재 디렉토리 기준 경로 설정
+const isProduction = process.env.NODE_ENV === 'production'
+const clientPath = isProduction
+  ? path.join(process.cwd(), 'dist/client')
+  : path.join(__dirname, '../../dist/client')
+
 // 미들웨어
 app.use(cors())
 app.use(express.json())
 
 // 정적 파일 서빙 (프로덕션)
-app.use(express.static(path.join(__dirname, '../../dist/client')))
+console.log('Client path:', clientPath)
+app.use(express.static(clientPath))
 
 // 간단한 세션 (메모리 기반)
 const sessions = new Map<string, { userId: string; expires: number }>()
@@ -112,10 +119,10 @@ app.post('/api/projects', authMiddleware, async (req, res) => {
 
 // SPA 라우팅 (모든 경로를 index.html로)
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../../dist/client/index.html'))
+  res.sendFile(path.join(clientPath, 'index.html'))
 })
 
 // 서버 시작
-app.listen(PORT, () => {
-  console.log(`🚀 서버 실행 중: http://localhost:${PORT}`)
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 서버 실행 중: http://0.0.0.0:${PORT}`)
 })

@@ -30840,9 +30840,12 @@ var __dirname = "/Users/chulhyunhwang/Documents/claude/slide_saas/saas/src/serve
 var app = import_express.default();
 var prisma = new import_client.PrismaClient;
 var PORT = process.env.PORT || 3001;
+var isProduction = false;
+var clientPath = isProduction ? path.join(process.cwd(), "dist/client") : path.join(__dirname, "../../dist/client");
 app.use(import_cors.default());
 app.use(import_express.default.json());
-app.use(import_express.default.static(path.join(__dirname, "../../dist/client")));
+console.log("Client path:", clientPath);
+app.use(import_express.default.static(clientPath));
 var sessions = new Map;
 var authMiddleware = (req, res, next) => {
   const token = req.headers.authorization?.replace("Bearer ", "");
@@ -30915,8 +30918,8 @@ app.post("/api/projects", authMiddleware, async (req, res) => {
   res.json({ project });
 });
 app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "../../dist/client/index.html"));
+  res.sendFile(path.join(clientPath, "index.html"));
 });
-app.listen(PORT, () => {
-  console.log(`\uD83D\uDE80 \uC11C\uBC84 \uC2E4\uD589 \uC911: http://localhost:${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`\uD83D\uDE80 \uC11C\uBC84 \uC2E4\uD589 \uC911: http://0.0.0.0:${PORT}`);
 });
