@@ -1,81 +1,71 @@
-"use client";
+import React from 'react'
+import { motion } from 'framer-motion'
 
-/**
- * Canvas 컴포넌트
- * 현재 선택된 슬라이드를 16:9 비율로 표시합니다.
- */
-
-import { motion, AnimatePresence } from "framer-motion";
-import { cn } from "@/lib/utils";
-import {
-  TitleSlide,
-  CardGrid,
-  ComparisonSlide,
-  TimelineSlide,
-  QuoteSlide,
-  TableSlide,
-} from "@/components/slides";
-import type { SlideProps } from "@/types/slide";
-import { themes, themeVariablesToCss } from "@/lib/themes";
+interface Slide {
+  id: string
+  type: string
+  content: Record<string, unknown>
+}
 
 interface CanvasProps {
-  slide: SlideProps;
-  theme: string;
-  className?: string;
+  slide?: Slide
+  className?: string
 }
 
-export function Canvas({ slide, theme: themeId, className }: CanvasProps) {
-  // 현재 테마 가져오기
-  const theme = themes.find((t) => t.id === themeId) || themes[0];
-  const themeCssVars = themeVariablesToCss(theme.light);
+export function Canvas({ slide, className }: CanvasProps) {
+  if (!slide) {
+    return (
+      <div className={`flex items-center justify-center h-full bg-slate-100 rounded-xl ${className}`}>
+        <p className="text-slate-400">슬라이드를 선택하세요</p>
+      </div>
+    )
+  }
 
-  // 슬라이드 타입별 렌더링
-  const renderSlide = (slideData: SlideProps) => {
-    switch (slideData.type) {
-      case "title":
-        return <TitleSlide {...slideData} />;
-      case "card-grid":
-        return <CardGrid {...slideData} />;
-      case "comparison":
-        return <ComparisonSlide {...slideData} />;
-      case "timeline":
-        return <TimelineSlide {...slideData} />;
-      case "quote":
-        return <QuoteSlide {...slideData} />;
-      case "table":
-        return <TableSlide {...slideData} />;
-      default:
-        return (
-          <div className="flex h-full items-center justify-center">
-            <p className="text-muted-foreground">알 수 없는 슬라이드 타입</p>
-          </div>
-        );
-    }
-  };
+  const { content } = slide
 
   return (
-    <div
-      className={cn(
-        "w-full max-w-4xl aspect-video rounded-xl overflow-hidden shadow-2xl border",
-        "bg-card",
-        className
-      )}
-      style={themeCssVars}
+    <motion.div
+      initial={{ opacity: 0, scale: 0.98 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className={`w-full max-w-4xl aspect-video rounded-xl overflow-hidden shadow-2xl border bg-white ${className}`}
     >
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={slide.id}
-          initial={{ opacity: 0, scale: 0.98 }}
-          animate={{ opacity: 1, scale: 1 }}
-          exit={{ opacity: 0, scale: 0.98 }}
-          transition={{ duration: 0.2 }}
-          className="h-full"
-        >
-          {renderSlide(slide)}
-        </motion.div>
-      </AnimatePresence>
-    </div>
-  );
+      <div className="h-full p-12 flex flex-col justify-center">
+        {slide.type === 'title' && (
+          <>
+            <h1 className="text-4xl font-bold text-slate-900 mb-4">
+              {(content.title as string) || '제목 없음'}
+            </h1>
+            {content.subtitle && (
+              <p className="text-xl text-slate-600">
+                {content.subtitle as string}
+              </p>
+            )}
+          </>
+        )}
+
+        {slide.type === 'card-grid' && (
+          <>
+            <h2 className="text-2xl font-bold text-slate-900 mb-6">
+              {(content.title as string) || '카드 그리드'}
+            </h2>
+            <div className="grid grid-cols-3 gap-4">
+              {Array.isArray(content.items) && content.items.map((item: string, i: number) => (
+                <div key={i} className="p-4 bg-slate-50 rounded-lg">
+                  {item}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {!['title', 'card-grid'].includes(slide.type) && (
+          <div className="text-center text-slate-400">
+            {slide.type} 슬라이드
+          </div>
+        )}
+      </div>
+    </motion.div>
+  )
 }
 
-export default Canvas;
+export default Canvas
