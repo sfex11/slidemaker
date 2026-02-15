@@ -286,11 +286,13 @@ JSON 배열로만 응답하세요.`
     })
 
     const aiContent = completion.choices[0]?.message?.content || ''
+    console.log('AI 응답:', aiContent.substring(0, 500))
 
     // JSON 추출
     const jsonMatch = aiContent.match(/\[[\s\S]*\]/)
     if (jsonMatch) {
       const slides = JSON.parse(jsonMatch[0])
+      console.log('파싱된 슬라이드:', JSON.stringify(slides, null, 2))
       // content가 undefined인 경우 기본값 설정
       return slides.map((s: any) => ({
         type: s.type || 'title',

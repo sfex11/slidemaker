@@ -57735,9 +57735,11 @@ JSON \uBC30\uC5F4\uB85C\uB9CC \uC751\uB2F5\uD558\uC138\uC694.`;
       temperature: 0.7
     });
     const aiContent = completion.choices[0]?.message?.content || "";
+    console.log("AI \uC751\uB2F5:", aiContent.substring(0, 500));
     const jsonMatch = aiContent.match(/\[[\s\S]*\]/);
     if (jsonMatch) {
       const slides = JSON.parse(jsonMatch[0]);
+      console.log("\uD30C\uC2F1\uB41C \uC2AC\uB77C\uC774\uB4DC:", JSON.stringify(slides, null, 2));
       return slides.map((s) => ({
         type: s.type || "title",
         content: s.content || {}
