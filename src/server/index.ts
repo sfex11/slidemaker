@@ -285,12 +285,17 @@ JSON 배열로만 응답하세요.`
       temperature: 0.7,
     })
 
-    const content = completion.choices[0]?.message?.content || ''
+    const aiContent = completion.choices[0]?.message?.content || ''
 
     // JSON 추출
-    const jsonMatch = content.match(/\[[\s\S]*\]/)
+    const jsonMatch = aiContent.match(/\[[\s\S]*\]/)
     if (jsonMatch) {
-      return JSON.parse(jsonMatch[0])
+      const slides = JSON.parse(jsonMatch[0])
+      // content가 undefined인 경우 기본값 설정
+      return slides.map((s: any) => ({
+        type: s.type || 'title',
+        content: s.content || {}
+      }))
     }
 
     throw new Error('JSON 파싱 실패')

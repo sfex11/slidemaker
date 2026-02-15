@@ -57734,10 +57734,14 @@ JSON \uBC30\uC5F4\uB85C\uB9CC \uC751\uB2F5\uD558\uC138\uC694.`;
       max_completion_tokens: 4096,
       temperature: 0.7
     });
-    const content = completion.choices[0]?.message?.content || "";
-    const jsonMatch = content.match(/\[[\s\S]*\]/);
+    const aiContent = completion.choices[0]?.message?.content || "";
+    const jsonMatch = aiContent.match(/\[[\s\S]*\]/);
     if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
+      const slides = JSON.parse(jsonMatch[0]);
+      return slides.map((s) => ({
+        type: s.type || "title",
+        content: s.content || {}
+      }));
     }
     throw new Error("JSON \uD30C\uC2F1 \uC2E4\uD328");
   } catch (error2) {
