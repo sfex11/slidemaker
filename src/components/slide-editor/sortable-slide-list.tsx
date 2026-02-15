@@ -1,4 +1,3 @@
-import React from 'react'
 import { SortableSlideItem } from './sortable-slide-item'
 
 interface Slide {
@@ -24,7 +23,7 @@ export function SortableSlideList({ slides, selectedId, onSelect }: SortableSlid
 
   return (
     <div className="space-y-2">
-      {slides.map((slide, index) => (
+      {slides.map((slide) => (
         <SortableSlideItem
           key={slide.id}
           slide={slide}

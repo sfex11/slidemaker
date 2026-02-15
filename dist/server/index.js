@@ -38173,6 +38173,9 @@ var bcryptjs_default = {
 // src/server/index.ts
 var import_client4 = __toESM(require_default2(), 1);
 import path2 from "path";
+import crypto2 from "crypto";
+import dns from "dns/promises";
+import net from "net";
 
 // node_modules/openai/internal/tslib.mjs
 function __classPrivateFieldSet(receiver, state, value, kind, f) {
@@ -57521,18 +57524,119 @@ var import_whatwg_mimetype = __toESM(require_mime_type(), 1);
 var __dirname = "/Users/chulhyunhwang/Documents/claude/slide_saas/saas/src/server";
 var app = import_express.default();
 var prisma = new import_client4.PrismaClient;
-var PORT = process.env.PORT || 3001;
+var PORT = Number(process.env.PORT || 3001);
+var SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+var allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:3000,http://127.0.0.1:3000").split(",").map((origin) => origin.trim()).filter(Boolean);
 var glmClient = new OpenAI({
   apiKey: process.env.ZAI_API_KEY || "",
   baseURL: "https://api.z.ai/api/coding/paas/v4"
 });
 var isProduction = false;
 var clientPath = isProduction ? path2.join(process.cwd(), "dist/client") : path2.join(__dirname, "../../dist/client");
-app.use(import_cors.default());
+app.use(import_cors.default({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(null, false);
+  },
+  credentials: true
+}));
 app.use(import_express.default.json({ limit: "10mb" }));
 console.log("Client path:", clientPath);
 app.use(import_express.default.static(clientPath));
 var sessions = new Map;
+var pruneExpiredSessions = () => {
+  const now = Date.now();
+  for (const [token, session] of sessions.entries()) {
+    if (session.expires <= now)
+      sessions.delete(token);
+  }
+};
+setInterval(pruneExpiredSessions, 60 * 60 * 1000).unref();
+var getUserId = (req) => req.userId;
+var parseSlideContent = (rawContent) => {
+  try {
+    return JSON.parse(rawContent);
+  } catch {
+    return {};
+  }
+};
+
+class UrlValidationError extends Error {
+}
+var isPrivateIPv4 = (ip) => {
+  const octets = ip.split(".").map(Number);
+  if (octets.length !== 4 || octets.some(Number.isNaN))
+    return false;
+  const [a, b] = octets;
+  if (a === 10)
+    return true;
+  if (a === 127)
+    return true;
+  if (a === 0)
+    return true;
+  if (a === 169 && b === 254)
+    return true;
+  if (a === 172 && b >= 16 && b <= 31)
+    return true;
+  if (a === 192 && b === 168)
+    return true;
+  return false;
+};
+var isPrivateIPv6 = (ip) => {
+  const normalized = ip.toLowerCase();
+  if (normalized === "::1" || normalized === "::")
+    return true;
+  if (normalized.startsWith("fc") || normalized.startsWith("fd"))
+    return true;
+  if (normalized.startsWith("fe8") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb")) {
+    return true;
+  }
+  if (normalized.startsWith("::ffff:")) {
+    const mapped = normalized.replace("::ffff:", "");
+    if (net.isIP(mapped) === 4)
+      return isPrivateIPv4(mapped);
+  }
+  return false;
+};
+var isPrivateIp = (ip) => {
+  const ipVersion = net.isIP(ip);
+  if (ipVersion === 4)
+    return isPrivateIPv4(ip);
+  if (ipVersion === 6)
+    return isPrivateIPv6(ip);
+  return true;
+};
+var assertSafePublicUrl = async (rawUrl) => {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new UrlValidationError("\uC720\uD6A8\uD55C URL\uC744 \uC785\uB825\uD558\uC138\uC694");
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new UrlValidationError("http/https URL\uB9CC \uD5C8\uC6A9\uB429\uB2C8\uB2E4");
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {
+    throw new UrlValidationError("\uB0B4\uBD80 \uB124\uD2B8\uC6CC\uD06C \uC8FC\uC18C\uB294 \uD5C8\uC6A9\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4");
+  }
+  if (net.isIP(hostname) && isPrivateIp(hostname)) {
+    throw new UrlValidationError("\uC0AC\uC124/\uB8E8\uD504\uBC31 IP\uB294 \uD5C8\uC6A9\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4");
+  }
+  let resolved;
+  try {
+    resolved = await dns.lookup(hostname, { all: true, verbatim: true });
+  } catch {
+    throw new UrlValidationError("URL \uD638\uC2A4\uD2B8\uB97C \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4");
+  }
+  if (resolved.length === 0 || resolved.some((record) => isPrivateIp(record.address))) {
+    throw new UrlValidationError("\uB0B4\uBD80 \uB124\uD2B8\uC6CC\uD06C \uC8FC\uC18C\uB294 \uD5C8\uC6A9\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4");
+  }
+  return parsed;
+};
 var authMiddleware = (req, res, next2) => {
   const token = req.headers.authorization?.replace("Bearer ", "");
   if (!token || !sessions.has(token)) {
@@ -57565,8 +57669,8 @@ app.post("/api/auth/login", async (req, res) => {
         return res.status(401).json({ error: "\uBE44\uBC00\uBC88\uD638\uAC00 \uC62C\uBC14\uB974\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4" });
       }
     }
-    const token = Math.random().toString(36).substring(2) + Date.now().toString(36);
-    sessions.set(token, { userId: user.id, expires: Date.now() + 7 * 24 * 60 * 60 * 1000 });
+    const token = crypto2.randomBytes(32).toString("hex");
+    sessions.set(token, { userId: user.id, expires: Date.now() + SESSION_TTL_MS });
     res.json({ token, user: { id: user.id, email: user.email, name: user.name } });
   } catch (error2) {
     console.error("\uB85C\uADF8\uC778 \uC624\uB958:", error2);
@@ -57581,32 +57685,32 @@ app.post("/api/auth/logout", (req, res) => {
 });
 app.get("/api/auth/me", authMiddleware, async (req, res) => {
   const user = await prisma.user.findUnique({
-    where: { id: req.userId }
+    where: { id: getUserId(req) }
   });
   res.json({ user: { id: user?.id, email: user?.email, name: user?.name } });
 });
 app.get("/api/projects", authMiddleware, async (req, res) => {
   const projects = await prisma.project.findMany({
-    where: { userId: req.userId },
+    where: { userId: getUserId(req) },
     include: { slides: { orderBy: { order: "asc" } } },
     orderBy: { updatedAt: "desc" }
   });
   const parsedProjects = projects.map((p) => ({
     ...p,
-    slides: p.slides.map((s) => ({ ...s, content: JSON.parse(s.content) }))
+    slides: p.slides.map((s) => ({ ...s, content: parseSlideContent(s.content) }))
   }));
   res.json({ projects: parsedProjects });
 });
 app.get("/api/projects/:id", authMiddleware, async (req, res) => {
   const project = await prisma.project.findFirst({
-    where: { id: req.params.id, userId: req.userId },
+    where: { id: req.params.id, userId: getUserId(req) },
     include: { slides: { orderBy: { order: "asc" } } }
   });
   if (!project)
     return res.status(404).json({ error: "\uD504\uB85C\uC81D\uD2B8 \uC5C6\uC74C" });
   const parsedProject = {
     ...project,
-    slides: project.slides.map((s) => ({ ...s, content: JSON.parse(s.content) }))
+    slides: project.slides.map((s) => ({ ...s, content: parseSlideContent(s.content) }))
   };
   res.json({ project: parsedProject });
 });
@@ -57616,7 +57720,7 @@ app.post("/api/projects", authMiddleware, async (req, res) => {
     data: {
       name,
       description,
-      userId: req.userId,
+      userId: getUserId(req),
       slides: slides ? {
         create: slides.map((s, i) => ({
           type: s.type,
@@ -57629,12 +57733,19 @@ app.post("/api/projects", authMiddleware, async (req, res) => {
   });
   const parsedProject = {
     ...project,
-    slides: project.slides.map((s) => ({ ...s, content: JSON.parse(s.content) }))
+    slides: project.slides.map((s) => ({ ...s, content: parseSlideContent(s.content) }))
   };
   res.json({ project: parsedProject });
 });
 app.put("/api/projects/:id", authMiddleware, async (req, res) => {
+  const userId = getUserId(req);
   const { name, description } = req.body;
+  const existingProject = await prisma.project.findFirst({
+    where: { id: req.params.id, userId },
+    select: { id: true }
+  });
+  if (!existingProject)
+    return res.status(404).json({ error: "\uD504\uB85C\uC81D\uD2B8 \uC5C6\uC74C" });
   const project = await prisma.project.update({
     where: { id: req.params.id },
     data: { name, description }
@@ -57642,6 +57753,13 @@ app.put("/api/projects/:id", authMiddleware, async (req, res) => {
   res.json({ project });
 });
 app.delete("/api/projects/:id", authMiddleware, async (req, res) => {
+  const userId = getUserId(req);
+  const existingProject = await prisma.project.findFirst({
+    where: { id: req.params.id, userId },
+    select: { id: true }
+  });
+  if (!existingProject)
+    return res.status(404).json({ error: "\uD504\uB85C\uC81D\uD2B8 \uC5C6\uC74C" });
   await prisma.project.delete({
     where: { id: req.params.id }
   });
@@ -57650,7 +57768,7 @@ app.delete("/api/projects/:id", authMiddleware, async (req, res) => {
 app.post("/api/projects/:projectId/slides", authMiddleware, async (req, res) => {
   const { type, content } = req.body;
   const project = await prisma.project.findFirst({
-    where: { id: req.params.projectId, userId: req.userId }
+    where: { id: req.params.projectId, userId: getUserId(req) }
   });
   if (!project)
     return res.status(404).json({ error: "\uD504\uB85C\uC81D\uD2B8 \uC5C6\uC74C" });
@@ -57661,19 +57779,61 @@ app.post("/api/projects/:projectId/slides", authMiddleware, async (req, res) => 
   res.json({ slide: { ...slide, content } });
 });
 app.put("/api/slides/:id", authMiddleware, async (req, res) => {
+  const userId = getUserId(req);
   const { type, content, order } = req.body;
+  const existingSlide = await prisma.slide.findFirst({
+    where: {
+      id: req.params.id,
+      project: { userId }
+    },
+    select: { id: true }
+  });
+  if (!existingSlide)
+    return res.status(404).json({ error: "\uC2AC\uB77C\uC774\uB4DC \uC5C6\uC74C" });
+  const updateData = {};
+  if (typeof type === "string")
+    updateData.type = type;
+  if (typeof content !== "undefined")
+    updateData.content = JSON.stringify(content);
+  if (typeof order === "number")
+    updateData.order = order;
   const slide = await prisma.slide.update({
     where: { id: req.params.id },
-    data: { type, content: JSON.stringify(content), order }
+    data: updateData
   });
-  res.json({ slide: { ...slide, content } });
+  res.json({ slide: { ...slide, content: typeof content !== "undefined" ? content : parseSlideContent(slide.content) } });
 });
 app.delete("/api/slides/:id", authMiddleware, async (req, res) => {
+  const userId = getUserId(req);
+  const existingSlide = await prisma.slide.findFirst({
+    where: {
+      id: req.params.id,
+      project: { userId }
+    },
+    select: { id: true }
+  });
+  if (!existingSlide)
+    return res.status(404).json({ error: "\uC2AC\uB77C\uC774\uB4DC \uC5C6\uC74C" });
   await prisma.slide.delete({ where: { id: req.params.id } });
   res.json({ ok: true });
 });
 async function fetchUrlContent(url) {
-  const response = await fetch(url);
+  const response = await fetch(url.toString(), {
+    signal: AbortSignal.timeout(1e4),
+    redirect: "follow"
+  });
+  if (!response.ok) {
+    throw new UrlValidationError("\uC6F9\uD398\uC774\uC9C0\uB97C \uAC00\uC838\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4");
+  }
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (contentLength > 2000000) {
+    throw new UrlValidationError("\uC6F9\uD398\uC774\uC9C0\uAC00 \uB108\uBB34 \uD07D\uB2C8\uB2E4");
+  }
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) {
+    throw new UrlValidationError("HTML \uD398\uC774\uC9C0 URL\uB9CC \uD5C8\uC6A9\uB429\uB2C8\uB2E4");
+  }
+  await assertSafePublicUrl(response.url);
   const html3 = await response.text();
   const $2 = load(html3);
   $2("script, style, nav, header, footer, aside, .ads, .comments").remove();
@@ -57762,14 +57922,15 @@ app.post("/api/generate/from-url", authMiddleware, async (req, res) => {
     if (!url) {
       return res.status(400).json({ error: "URL\uC744 \uC785\uB825\uD558\uC138\uC694" });
     }
-    console.log("URL\uC5D0\uC11C \uC2AC\uB77C\uC774\uB4DC \uC0DD\uC131:", url);
-    const content = await fetchUrlContent(url);
+    const safeUrl = await assertSafePublicUrl(url);
+    console.log("URL\uC5D0\uC11C \uC2AC\uB77C\uC774\uB4DC \uC0DD\uC131:", safeUrl.toString());
+    const content = await fetchUrlContent(safeUrl);
     const slides = await generateSlidesWithAI(content, "url");
     const project = await prisma.project.create({
       data: {
-        name: name || new URL(url).hostname,
-        description: `\uCD9C\uCC98: ${url}`,
-        userId: req.userId,
+        name: name || safeUrl.hostname,
+        description: `\uCD9C\uCC98: ${safeUrl.toString()}`,
+        userId: getUserId(req),
         slides: {
           create: slides.map((s, i) => ({
             type: s.type,
@@ -57782,11 +57943,14 @@ app.post("/api/generate/from-url", authMiddleware, async (req, res) => {
     });
     const parsedProject = {
       ...project,
-      slides: project.slides.map((s) => ({ ...s, content: JSON.parse(s.content) }))
+      slides: project.slides.map((s) => ({ ...s, content: parseSlideContent(s.content) }))
     };
     res.json({ project: parsedProject });
   } catch (error2) {
     console.error("URL \uC2AC\uB77C\uC774\uB4DC \uC0DD\uC131 \uC624\uB958:", error2);
+    if (error2 instanceof UrlValidationError) {
+      return res.status(400).json({ error: error2.message });
+    }
     res.status(500).json({ error: "\uC2AC\uB77C\uC774\uB4DC \uC0DD\uC131 \uC2E4\uD328" });
   }
 });
@@ -57802,7 +57966,7 @@ app.post("/api/generate/from-markdown", authMiddleware, async (req, res) => {
       data: {
         name: name || "\uC0C8 \uD504\uB808\uC820\uD14C\uC774\uC158",
         description: "\uB9C8\uD06C\uB2E4\uC6B4\uC5D0\uC11C \uC0DD\uC131",
-        userId: req.userId,
+        userId: getUserId(req),
         slides: {
           create: slides.map((s, i) => ({
             type: s.type,
@@ -57815,7 +57979,7 @@ app.post("/api/generate/from-markdown", authMiddleware, async (req, res) => {
     });
     const parsedProject = {
       ...project,
-      slides: project.slides.map((s) => ({ ...s, content: JSON.parse(s.content) }))
+      slides: project.slides.map((s) => ({ ...s, content: parseSlideContent(s.content) }))
     };
     res.json({ project: parsedProject });
   } catch (error2) {
@@ -57835,7 +57999,7 @@ app.post("/api/generate/from-text", authMiddleware, async (req, res) => {
       data: {
         name: name || "\uC0C8 \uD504\uB808\uC820\uD14C\uC774\uC158",
         description: "\uD14D\uC2A4\uD2B8\uC5D0\uC11C \uC0DD\uC131",
-        userId: req.userId,
+        userId: getUserId(req),
         slides: {
           create: slides.map((s, i) => ({
             type: s.type,
@@ -57848,7 +58012,7 @@ app.post("/api/generate/from-text", authMiddleware, async (req, res) => {
     });
     const parsedProject = {
       ...project,
-      slides: project.slides.map((s) => ({ ...s, content: JSON.parse(s.content) }))
+      slides: project.slides.map((s) => ({ ...s, content: parseSlideContent(s.content) }))
     };
     res.json({ project: parsedProject });
   } catch (error2) {
@@ -57856,7 +58020,7 @@ app.post("/api/generate/from-text", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "\uC2AC\uB77C\uC774\uB4DC \uC0DD\uC131 \uC2E4\uD328" });
   }
 });
-app.get("*", (req, res) => {
+app.get("*", (_req, res) => {
   res.sendFile(path2.join(clientPath, "index.html"));
 });
 app.listen(PORT, "0.0.0.0", () => {

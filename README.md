@@ -1,36 +1,77 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Slide Maker
 
-## Getting Started
+AI 기반 프레젠테이션 생성/편집 SaaS입니다.
 
-First, run the development server:
+## Tech Stack
+
+- Client: React 19, Vite, Tailwind CSS, React Router
+- Server: Express (Bun runtime)
+- DB: Prisma + SQLite
+- AI: GLM-5(OpenAI SDK 호환 엔드포인트)
+
+## Requirements
+
+- Bun 1.3+
+- Node.js 20+ (도구 호환용)
+
+## Environment Variables
+
+`.env` 또는 `.env.local`:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+DATABASE_URL="file:./dev.db"
+ZAI_API_KEY=""
+CORS_ORIGIN="http://localhost:3000,http://127.0.0.1:3000"
 ```
 
-Open [http://localhost:3001](http://localhost:3001) with your browser to see the result.
+- `ZAI_API_KEY`가 없으면 AI 생성은 기본 샘플 슬라이드로 폴백됩니다.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Install
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+bun install
+```
 
-## Learn More
+## Run (Development)
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+bun run dev
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- Client: `http://localhost:3000`
+- Server API: `http://localhost:3001`
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Build & Start
 
-## Deploy on Vercel
+```bash
+bun run build
+bun run start
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Database
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+bun run db:generate
+bun run db:push
+```
+
+## Test
+
+```bash
+bun run test        # unit
+bun run test:e2e    # playwright
+```
+
+## Project Structure
+
+```text
+src/
+  client/            # Vite React 앱
+  server/            # Express API 서버
+  components/
+    slide-editor/    # 슬라이드 편집 UI
+    ui/              # 공용 UI 컴포넌트
+  lib/               # 유틸리티
+prisma/
+  schema.prisma      # DB 스키마
+```

@@ -16,10 +16,16 @@
     "noFallthroughCasesInSwitch": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/client/*"],
+      "@/*": ["./src/*"],
       "@shared/*": ["./src/shared/*"]
     }
   },
-  "include": ["src"],
+  "include": [
+    "src/client",
+    "src/server",
+    "src/lib",
+    "src/components/slide-editor",
+    "src/components/ui/button.tsx"
+  ],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

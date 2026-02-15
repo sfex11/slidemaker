@@ -3,12 +3,20 @@ import cors from 'cors'
 import bcrypt from 'bcryptjs'
 import { PrismaClient } from '@prisma/client'
 import path from 'path'
+import crypto from 'crypto'
+import dns from 'dns/promises'
+import net from 'net'
 import OpenAI from 'openai'
 import * as cheerio from 'cheerio'
 
 const app = express()
 const prisma = new PrismaClient()
-const PORT = process.env.PORT || 3001
+const PORT = Number(process.env.PORT || 3001)
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000,http://127.0.0.1:3000')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean)
 
 // GLM-5 클라이언트 설정
 const glmClient = new OpenAI({
@@ -23,7 +31,16 @@ const clientPath = isProduction
   : path.join(__dirname, '../../dist/client')
 
 // 미들웨어
-app.use(cors())
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true)
+      return
+    }
+    callback(null, false)
+  },
+  credentials: true,
+}))
 app.use(express.json({ limit: '10mb' }))
 
 // 정적 파일 서빙 (프로덕션)
@@ -32,6 +49,97 @@ app.use(express.static(clientPath))
 
 // 간단한 세션 (메모리 기반)
 const sessions = new Map<string, { userId: string; expires: number }>()
+const pruneExpiredSessions = () => {
+  const now = Date.now()
+  for (const [token, session] of sessions.entries()) {
+    if (session.expires <= now) sessions.delete(token)
+  }
+}
+setInterval(pruneExpiredSessions, 60 * 60 * 1000).unref()
+
+type AuthenticatedRequest = express.Request & { userId: string }
+
+const getUserId = (req: express.Request) => (req as AuthenticatedRequest).userId
+
+const parseSlideContent = (rawContent: string) => {
+  try {
+    return JSON.parse(rawContent)
+  } catch {
+    return {}
+  }
+}
+
+class UrlValidationError extends Error {}
+
+const isPrivateIPv4 = (ip: string) => {
+  const octets = ip.split('.').map(Number)
+  if (octets.length !== 4 || octets.some(Number.isNaN)) return false
+
+  const [a, b] = octets
+  if (a === 10) return true
+  if (a === 127) return true
+  if (a === 0) return true
+  if (a === 169 && b === 254) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  if (a === 192 && b === 168) return true
+  return false
+}
+
+const isPrivateIPv6 = (ip: string) => {
+  const normalized = ip.toLowerCase()
+  if (normalized === '::1' || normalized === '::') return true
+  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true
+  if (normalized.startsWith('fe8') || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb')) {
+    return true
+  }
+  if (normalized.startsWith('::ffff:')) {
+    const mapped = normalized.replace('::ffff:', '')
+    if (net.isIP(mapped) === 4) return isPrivateIPv4(mapped)
+  }
+  return false
+}
+
+const isPrivateIp = (ip: string) => {
+  const ipVersion = net.isIP(ip)
+  if (ipVersion === 4) return isPrivateIPv4(ip)
+  if (ipVersion === 6) return isPrivateIPv6(ip)
+  return true
+}
+
+const assertSafePublicUrl = async (rawUrl: string) => {
+  let parsed: URL
+  try {
+    parsed = new URL(rawUrl)
+  } catch {
+    throw new UrlValidationError('유효한 URL을 입력하세요')
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new UrlValidationError('http/https URL만 허용됩니다')
+  }
+
+  const hostname = parsed.hostname.toLowerCase()
+  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+    throw new UrlValidationError('내부 네트워크 주소는 허용되지 않습니다')
+  }
+
+  if (net.isIP(hostname) && isPrivateIp(hostname)) {
+    throw new UrlValidationError('사설/루프백 IP는 허용되지 않습니다')
+  }
+
+  let resolved: Array<{ address: string; family: number }>
+  try {
+    resolved = await dns.lookup(hostname, { all: true, verbatim: true })
+  } catch {
+    throw new UrlValidationError('URL 호스트를 확인할 수 없습니다')
+  }
+
+  if (resolved.length === 0 || resolved.some(record => isPrivateIp(record.address))) {
+    throw new UrlValidationError('내부 네트워크 주소는 허용되지 않습니다')
+  }
+
+  return parsed
+}
 
 // 인증 미들웨어
 const authMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -47,7 +155,7 @@ const authMiddleware = (req: express.Request, res: express.Response, next: expre
     return res.status(401).json({ error: '세션 만료' })
   }
 
-  ;(req as any).userId = session.userId
+  ;(req as AuthenticatedRequest).userId = session.userId
   next()
 }
 
@@ -79,8 +187,8 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     // 세션 토큰 생성
-    const token = Math.random().toString(36).substring(2) + Date.now().toString(36)
-    sessions.set(token, { userId: user.id, expires: Date.now() + 7 * 24 * 60 * 60 * 1000 }) // 7일
+    const token = crypto.randomBytes(32).toString('hex')
+    sessions.set(token, { userId: user.id, expires: Date.now() + SESSION_TTL_MS })
 
     res.json({ token, user: { id: user.id, email: user.email, name: user.name } })
   } catch (error) {
@@ -99,7 +207,7 @@ app.post('/api/auth/logout', (req, res) => {
 // 내 정보 API
 app.get('/api/auth/me', authMiddleware, async (req, res) => {
   const user = await prisma.user.findUnique({
-    where: { id: (req as any).userId }
+    where: { id: getUserId(req) }
   })
   res.json({ user: { id: user?.id, email: user?.email, name: user?.name } })
 })
@@ -107,28 +215,26 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
 // 프로젝트 API
 app.get('/api/projects', authMiddleware, async (req, res) => {
   const projects = await prisma.project.findMany({
-    where: { userId: (req as any).userId },
+    where: { userId: getUserId(req) },
     include: { slides: { orderBy: { order: 'asc' } } },
     orderBy: { updatedAt: 'desc' }
   })
-  // content 파싱
   const parsedProjects = projects.map(p => ({
     ...p,
-    slides: p.slides.map(s => ({ ...s, content: JSON.parse(s.content) }))
+    slides: p.slides.map(s => ({ ...s, content: parseSlideContent(s.content) }))
   }))
   res.json({ projects: parsedProjects })
 })
 
 app.get('/api/projects/:id', authMiddleware, async (req, res) => {
   const project = await prisma.project.findFirst({
-    where: { id: req.params.id, userId: (req as any).userId },
+    where: { id: req.params.id, userId: getUserId(req) },
     include: { slides: { orderBy: { order: 'asc' } } }
   })
   if (!project) return res.status(404).json({ error: '프로젝트 없음' })
-  // content 파싱
   const parsedProject = {
     ...project,
-    slides: project.slides.map(s => ({ ...s, content: JSON.parse(s.content) }))
+    slides: project.slides.map(s => ({ ...s, content: parseSlideContent(s.content) }))
   }
   res.json({ project: parsedProject })
 })
@@ -139,7 +245,7 @@ app.post('/api/projects', authMiddleware, async (req, res) => {
     data: {
       name,
       description,
-      userId: (req as any).userId,
+      userId: getUserId(req),
       slides: slides ? {
         create: slides.map((s: any, i: number) => ({
           type: s.type,
@@ -150,16 +256,23 @@ app.post('/api/projects', authMiddleware, async (req, res) => {
     },
     include: { slides: true }
   })
-  // content 파싱
   const parsedProject = {
     ...project,
-    slides: project.slides.map(s => ({ ...s, content: JSON.parse(s.content) }))
+    slides: project.slides.map(s => ({ ...s, content: parseSlideContent(s.content) }))
   }
   res.json({ project: parsedProject })
 })
 
 app.put('/api/projects/:id', authMiddleware, async (req, res) => {
+  const userId = getUserId(req)
   const { name, description } = req.body
+
+  const existingProject = await prisma.project.findFirst({
+    where: { id: req.params.id, userId },
+    select: { id: true }
+  })
+  if (!existingProject) return res.status(404).json({ error: '프로젝트 없음' })
+
   const project = await prisma.project.update({
     where: { id: req.params.id },
     data: { name, description }
@@ -168,6 +281,14 @@ app.put('/api/projects/:id', authMiddleware, async (req, res) => {
 })
 
 app.delete('/api/projects/:id', authMiddleware, async (req, res) => {
+  const userId = getUserId(req)
+
+  const existingProject = await prisma.project.findFirst({
+    where: { id: req.params.id, userId },
+    select: { id: true }
+  })
+  if (!existingProject) return res.status(404).json({ error: '프로젝트 없음' })
+
   await prisma.project.delete({
     where: { id: req.params.id }
   })
@@ -178,7 +299,7 @@ app.delete('/api/projects/:id', authMiddleware, async (req, res) => {
 app.post('/api/projects/:projectId/slides', authMiddleware, async (req, res) => {
   const { type, content } = req.body
   const project = await prisma.project.findFirst({
-    where: { id: req.params.projectId, userId: (req as any).userId }
+    where: { id: req.params.projectId, userId: getUserId(req) }
   })
   if (!project) return res.status(404).json({ error: '프로젝트 없음' })
 
@@ -190,15 +311,42 @@ app.post('/api/projects/:projectId/slides', authMiddleware, async (req, res) => 
 })
 
 app.put('/api/slides/:id', authMiddleware, async (req, res) => {
+  const userId = getUserId(req)
   const { type, content, order } = req.body
+
+  const existingSlide = await prisma.slide.findFirst({
+    where: {
+      id: req.params.id,
+      project: { userId }
+    },
+    select: { id: true }
+  })
+  if (!existingSlide) return res.status(404).json({ error: '슬라이드 없음' })
+
+  const updateData: { type?: string; content?: string; order?: number } = {}
+  if (typeof type === 'string') updateData.type = type
+  if (typeof content !== 'undefined') updateData.content = JSON.stringify(content)
+  if (typeof order === 'number') updateData.order = order
+
   const slide = await prisma.slide.update({
     where: { id: req.params.id },
-    data: { type, content: JSON.stringify(content), order }
+    data: updateData
   })
-  res.json({ slide: { ...slide, content } })
+  res.json({ slide: { ...slide, content: typeof content !== 'undefined' ? content : parseSlideContent(slide.content) } })
 })
 
 app.delete('/api/slides/:id', authMiddleware, async (req, res) => {
+  const userId = getUserId(req)
+
+  const existingSlide = await prisma.slide.findFirst({
+    where: {
+      id: req.params.id,
+      project: { userId }
+    },
+    select: { id: true }
+  })
+  if (!existingSlide) return res.status(404).json({ error: '슬라이드 없음' })
+
   await prisma.slide.delete({ where: { id: req.params.id } })
   res.json({ ok: true })
 })
@@ -208,8 +356,26 @@ app.delete('/api/slides/:id', authMiddleware, async (req, res) => {
 // ==========================================
 
 // URL에서 콘텐츠 추출
-async function fetchUrlContent(url: string): Promise<string> {
-  const response = await fetch(url)
+async function fetchUrlContent(url: URL): Promise<string> {
+  const response = await fetch(url.toString(), {
+    signal: AbortSignal.timeout(10_000),
+    redirect: 'follow'
+  })
+  if (!response.ok) {
+    throw new UrlValidationError('웹페이지를 가져오지 못했습니다')
+  }
+
+  const contentLength = Number(response.headers.get('content-length') || 0)
+  if (contentLength > 2_000_000) {
+    throw new UrlValidationError('웹페이지가 너무 큽니다')
+  }
+
+  const contentType = response.headers.get('content-type') || ''
+  if (!contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
+    throw new UrlValidationError('HTML 페이지 URL만 허용됩니다')
+  }
+
+  await assertSafePublicUrl(response.url)
   const html = await response.text()
   const $ = cheerio.load(html)
 
@@ -322,10 +488,11 @@ app.post('/api/generate/from-url', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'URL을 입력하세요' })
     }
 
-    console.log('URL에서 슬라이드 생성:', url)
+    const safeUrl = await assertSafePublicUrl(url)
+    console.log('URL에서 슬라이드 생성:', safeUrl.toString())
 
     // URL 콘텐츠 추출
-    const content = await fetchUrlContent(url)
+    const content = await fetchUrlContent(safeUrl)
 
     // AI로 슬라이드 생성
     const slides = await generateSlidesWithAI(content, 'url')
@@ -333,9 +500,9 @@ app.post('/api/generate/from-url', authMiddleware, async (req, res) => {
     // 프로젝트 생성
     const project = await prisma.project.create({
       data: {
-        name: name || new URL(url).hostname,
-        description: `출처: ${url}`,
-        userId: (req as any).userId,
+        name: name || safeUrl.hostname,
+        description: `출처: ${safeUrl.toString()}`,
+        userId: getUserId(req),
         slides: {
           create: slides.map((s: any, i: number) => ({
             type: s.type,
@@ -347,14 +514,16 @@ app.post('/api/generate/from-url', authMiddleware, async (req, res) => {
       include: { slides: { orderBy: { order: 'asc' } } }
     })
 
-    // content 파싱 후 반환
     const parsedProject = {
       ...project,
-      slides: project.slides.map(s => ({ ...s, content: JSON.parse(s.content) }))
+      slides: project.slides.map(s => ({ ...s, content: parseSlideContent(s.content) }))
     }
     res.json({ project: parsedProject })
   } catch (error) {
     console.error('URL 슬라이드 생성 오류:', error)
+    if (error instanceof UrlValidationError) {
+      return res.status(400).json({ error: error.message })
+    }
     res.status(500).json({ error: '슬라이드 생성 실패' })
   }
 })
@@ -378,7 +547,7 @@ app.post('/api/generate/from-markdown', authMiddleware, async (req, res) => {
       data: {
         name: name || '새 프레젠테이션',
         description: '마크다운에서 생성',
-        userId: (req as any).userId,
+        userId: getUserId(req),
         slides: {
           create: slides.map((s: any, i: number) => ({
             type: s.type,
@@ -390,10 +559,9 @@ app.post('/api/generate/from-markdown', authMiddleware, async (req, res) => {
       include: { slides: { orderBy: { order: 'asc' } } }
     })
 
-    // content 파싱 후 반환
     const parsedProject = {
       ...project,
-      slides: project.slides.map(s => ({ ...s, content: JSON.parse(s.content) }))
+      slides: project.slides.map(s => ({ ...s, content: parseSlideContent(s.content) }))
     }
     res.json({ project: parsedProject })
   } catch (error) {
@@ -421,7 +589,7 @@ app.post('/api/generate/from-text', authMiddleware, async (req, res) => {
       data: {
         name: name || '새 프레젠테이션',
         description: '텍스트에서 생성',
-        userId: (req as any).userId,
+        userId: getUserId(req),
         slides: {
           create: slides.map((s: any, i: number) => ({
             type: s.type,
@@ -433,10 +601,9 @@ app.post('/api/generate/from-text', authMiddleware, async (req, res) => {
       include: { slides: { orderBy: { order: 'asc' } } }
     })
 
-    // content 파싱 후 반환
     const parsedProject = {
       ...project,
-      slides: project.slides.map(s => ({ ...s, content: JSON.parse(s.content) }))
+      slides: project.slides.map(s => ({ ...s, content: parseSlideContent(s.content) }))
     }
     res.json({ project: parsedProject })
   } catch (error) {
@@ -446,7 +613,7 @@ app.post('/api/generate/from-text', authMiddleware, async (req, res) => {
 })
 
 // SPA 라우팅 (모든 경로를 index.html로)
-app.get('*', (req, res) => {
+app.get('*', (_req, res) => {
   res.sendFile(path.join(clientPath, 'index.html'))
 })
 

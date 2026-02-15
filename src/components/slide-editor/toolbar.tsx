@@ -1,13 +1,11 @@
-import React from 'react'
 import { ArrowLeft, Save, Download } from 'lucide-react'
 
 interface ToolbarProps {
   projectName?: string
-  isLoading?: boolean
   className?: string
 }
 
-export function Toolbar({ projectName = '새 프로젝트', isLoading, className }: ToolbarProps) {
+export function Toolbar({ projectName = '새 프로젝트', className }: ToolbarProps) {
   return (
     <div className={`border-b bg-white px-4 py-2 ${className}`}>
       <div className="flex items-center justify-between">

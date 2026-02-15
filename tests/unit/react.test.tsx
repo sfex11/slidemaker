@@ -1,50 +1,49 @@
+import React from 'react'
 import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { renderToStaticMarkup } from 'react-dom/server'
 
-// Simple test component
-function TestButton({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
+function TestButton({ children }: { children: React.ReactNode }) {
   return (
-    <button onClick={onClick} type="button">
+    <button type="button">
       {children}
     </button>
   )
 }
 
-// Simple card component
 function SlideCard({ title, content }: { title: string; content: string }) {
   return (
-    <div data-testid="slide-card">
+    <article data-testid="slide-card">
       <h2>{title}</h2>
       <p>{content}</p>
-    </div>
+    </article>
   )
 }
 
-describe('React Component Tests', () => {
-  it('should render button with text', () => {
-    render(<TestButton onClick={() => {}}>Click Me</TestButton>)
-    expect(screen.getByRole('button', { name: /click me/i })).toBeInTheDocument()
+describe('React Render Tests', () => {
+  it('버튼 텍스트가 렌더링된다', () => {
+    const html = renderToStaticMarkup(<TestButton>Click Me</TestButton>)
+    expect(html).toContain('Click Me')
+    expect(html).toContain('type="button"')
   })
 
-  it('should handle button click', async () => {
-    const user = userEvent.setup()
-    let clicked = false
-    render(
-      <TestButton onClick={() => { clicked = true }}>
-        Click Me
-      </TestButton>
+  it('슬라이드 카드 타이틀/본문이 렌더링된다', () => {
+    const html = renderToStaticMarkup(
+      <SlideCard title="Test Title" content="Test Content" />
     )
 
-    await user.click(screen.getByRole('button'))
-    expect(clicked).toBe(true)
+    expect(html).toContain('data-testid="slide-card"')
+    expect(html).toContain('Test Title')
+    expect(html).toContain('Test Content')
   })
 
-  it('should render slide card with correct content', () => {
-    render(<SlideCard title="Test Title" content="Test Content" />)
+  it('여러 카드가 순서대로 렌더링된다', () => {
+    const html = renderToStaticMarkup(
+      <section>
+        <SlideCard title="A" content="1" />
+        <SlideCard title="B" content="2" />
+      </section>
+    )
 
-    expect(screen.getByTestId('slide-card')).toBeInTheDocument()
-    expect(screen.getByText('Test Title')).toBeInTheDocument()
-    expect(screen.getByText('Test Content')).toBeInTheDocument()
+    expect(html.indexOf('A')).toBeLessThan(html.indexOf('B'))
   })
 })

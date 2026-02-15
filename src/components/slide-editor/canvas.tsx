@@ -1,10 +1,9 @@
-import React from 'react'
 import { motion } from 'framer-motion'
 import { Quote, Clock, GitCompare, Table, Grid, Type } from 'lucide-react'
 
 interface Slide {
   id: string
-  type: 'title' | 'card-grid' | 'comparison' | 'timeline' | 'quote' | 'table'
+  type: string
   content: Record<string, unknown>
 }
 
@@ -13,19 +12,18 @@ interface CanvasProps {
   className?: string
 }
 
-// 슬라이드 테마 색상
-const themeColors = {
-  primary: '#3b82f6',
-  secondary: '#64748b',
-  accent: '#8b5cf6',
-  success: '#22c55e',
-  warning: '#f59e0b',
-}
+const toText = (value: unknown, fallback = '') => (
+  typeof value === 'string' ? value : fallback
+)
+
+const hasText = (value: unknown): value is string => (
+  typeof value === 'string' && value.trim().length > 0
+)
 
 export function Canvas({ slide, className }: CanvasProps) {
   if (!slide) {
     return (
-      <div className={`flex items-center justify-center h-full bg-slate-100 rounded-xl ${className}`}>
+      <div className={`flex items-center justify-center h-full bg-slate-100 rounded-xl ${className ?? ''}`}>
         <div className="text-center">
           <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-slate-200 flex items-center justify-center">
             <Type className="w-8 h-8 text-slate-400" />
@@ -41,7 +39,11 @@ export function Canvas({ slide, className }: CanvasProps) {
 
   const renderSlideContent = () => {
     switch (slide.type) {
-      case 'title':
+      case 'title': {
+        const title = toText(content.title, '제목 없음')
+        const subtitle = toText(content.subtitle)
+        const author = toText(content.author)
+
         return (
           <div className="h-full flex flex-col justify-center items-center text-center px-12">
             <motion.h1
@@ -49,34 +51,38 @@ export function Canvas({ slide, className }: CanvasProps) {
               animate={{ opacity: 1, y: 0 }}
               className="text-5xl font-bold text-slate-900 mb-6"
             >
-              {(content.title as string) || '제목 없음'}
+              {title}
             </motion.h1>
-            {content.subtitle && (
+            {hasText(subtitle) && (
               <motion.p
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.1 }}
                 className="text-2xl text-slate-600 max-w-2xl"
               >
-                {content.subtitle as string}
+                {subtitle}
               </motion.p>
             )}
-            {content.author && (
+            {hasText(author) && (
               <motion.p
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ delay: 0.2 }}
                 className="mt-8 text-slate-500"
               >
-                {content.author as string}
+                {author}
               </motion.p>
             )}
           </div>
         )
+      }
 
-      case 'card-grid':
-        const items = Array.isArray(content.items) ? content.items as string[] : []
-        const cols = content.columns as number || 3
+      case 'card-grid': {
+        const items = Array.isArray(content.items)
+          ? content.items.map((item) => toText(item)).filter(Boolean)
+          : []
+        const cols = typeof content.columns === 'number' ? content.columns : 3
+
         return (
           <div className="h-full flex flex-col justify-center px-12">
             <motion.h2
@@ -84,15 +90,15 @@ export function Canvas({ slide, className }: CanvasProps) {
               animate={{ opacity: 1, y: 0 }}
               className="text-3xl font-bold text-slate-900 mb-8 text-center"
             >
-              {(content.title as string) || '카드 그리드'}
+              {toText(content.title, '카드 그리드')}
             </motion.h2>
             <div className={`grid gap-4 ${cols === 2 ? 'grid-cols-2' : cols === 4 ? 'grid-cols-4' : 'grid-cols-3'}`}>
-              {items.map((item, i) => (
+              {items.map((item, index) => (
                 <motion.div
-                  key={i}
+                  key={index}
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: i * 0.1 }}
+                  transition={{ delay: index * 0.1 }}
                   className="p-6 bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow"
                 >
                   <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center mb-3">
@@ -104,10 +110,16 @@ export function Canvas({ slide, className }: CanvasProps) {
             </div>
           </div>
         )
+      }
 
-      case 'comparison':
-        const leftItems = Array.isArray(content.leftItems) ? content.leftItems as string[] : ['왼쪽 항목']
-        const rightItems = Array.isArray(content.rightItems) ? content.rightItems as string[] : ['오른쪽 항목']
+      case 'comparison': {
+        const leftItems = Array.isArray(content.leftItems)
+          ? content.leftItems.map((item) => toText(item)).filter(Boolean)
+          : ['왼쪽 항목']
+        const rightItems = Array.isArray(content.rightItems)
+          ? content.rightItems.map((item) => toText(item)).filter(Boolean)
+          : ['오른쪽 항목']
+
         return (
           <div className="h-full flex flex-col justify-center px-12">
             <motion.h2
@@ -115,10 +127,9 @@ export function Canvas({ slide, className }: CanvasProps) {
               animate={{ opacity: 1, y: 0 }}
               className="text-3xl font-bold text-slate-900 mb-8 text-center"
             >
-              {(content.title as string) || '비교'}
+              {toText(content.title, '비교')}
             </motion.h2>
             <div className="grid grid-cols-2 gap-8">
-              {/* 왼쪽 */}
               <motion.div
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
@@ -126,18 +137,18 @@ export function Canvas({ slide, className }: CanvasProps) {
               >
                 <h3 className="text-xl font-bold text-blue-700 mb-4 flex items-center gap-2">
                   <GitCompare className="w-5 h-5" />
-                  {content.leftTitle as string || '옵션 A'}
+                  {toText(content.leftTitle, '옵션 A')}
                 </h3>
                 <ul className="space-y-2">
-                  {leftItems.map((item, i) => (
-                    <li key={i} className="flex items-center gap-2 text-slate-600">
+                  {leftItems.map((item, index) => (
+                    <li key={index} className="flex items-center gap-2 text-slate-600">
                       <span className="w-2 h-2 rounded-full bg-blue-400" />
                       {item}
                     </li>
                   ))}
                 </ul>
               </motion.div>
-              {/* 오른쪽 */}
+
               <motion.div
                 initial={{ opacity: 0, x: 20 }}
                 animate={{ opacity: 1, x: 0 }}
@@ -146,11 +157,11 @@ export function Canvas({ slide, className }: CanvasProps) {
               >
                 <h3 className="text-xl font-bold text-purple-700 mb-4 flex items-center gap-2">
                   <GitCompare className="w-5 h-5" />
-                  {content.rightTitle as string || '옵션 B'}
+                  {toText(content.rightTitle, '옵션 B')}
                 </h3>
                 <ul className="space-y-2">
-                  {rightItems.map((item, i) => (
-                    <li key={i} className="flex items-center gap-2 text-slate-600">
+                  {rightItems.map((item, index) => (
+                    <li key={index} className="flex items-center gap-2 text-slate-600">
                       <span className="w-2 h-2 rounded-full bg-purple-400" />
                       {item}
                     </li>
@@ -160,11 +171,16 @@ export function Canvas({ slide, className }: CanvasProps) {
             </div>
           </div>
         )
+      }
 
-      case 'timeline':
+      case 'timeline': {
         const timelineItems = Array.isArray(content.items)
-          ? content.items as Array<{ title: string; description: string }>
+          ? content.items.map((item) => ({
+            title: toText((item as { title?: unknown })?.title),
+            description: toText((item as { description?: unknown })?.description),
+          }))
           : [{ title: '단계 1', description: '설명' }]
+
         return (
           <div className="h-full flex flex-col justify-center px-12">
             <motion.h2
@@ -173,23 +189,22 @@ export function Canvas({ slide, className }: CanvasProps) {
               className="text-3xl font-bold text-slate-900 mb-10 text-center flex items-center justify-center gap-3"
             >
               <Clock className="w-8 h-8 text-blue-500" />
-              {(content.title as string) || '타임라인'}
+              {toText(content.title, '타임라인')}
             </motion.h2>
             <div className="relative">
-              {/* 타임라인 라인 */}
               <div className="absolute left-6 top-0 bottom-0 w-0.5 bg-gradient-to-b from-blue-500 to-purple-500" />
               <div className="space-y-6">
-                {timelineItems.map((item, i) => (
+                {timelineItems.map((item, index) => (
                   <motion.div
-                    key={i}
+                    key={index}
                     initial={{ opacity: 0, x: -20 }}
                     animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: i * 0.15 }}
+                    transition={{ delay: index * 0.15 }}
                     className="flex items-start gap-4 pl-4"
                   >
                     <div className="w-5 h-5 rounded-full bg-white border-4 border-blue-500 z-10 flex-shrink-0" />
                     <div className="flex-1 p-4 bg-slate-50 rounded-lg border border-slate-200">
-                      <h4 className="font-bold text-slate-800">{item.title || `단계 ${i + 1}`}</h4>
+                      <h4 className="font-bold text-slate-800">{item.title || `단계 ${index + 1}`}</h4>
                       <p className="text-slate-600 text-sm mt-1">{item.description || '설명을 입력하세요'}</p>
                     </div>
                   </motion.div>
@@ -198,8 +213,14 @@ export function Canvas({ slide, className }: CanvasProps) {
             </div>
           </div>
         )
+      }
 
-      case 'quote':
+      case 'quote': {
+        const quote = toText(content.quote, '인용문을 입력하세요')
+        const author = toText(content.author)
+        const authorTitle = toText(content.authorTitle)
+        const authorImage = toText(content.authorImage)
+
         return (
           <div className="h-full flex flex-col justify-center items-center px-16">
             <motion.div
@@ -209,24 +230,24 @@ export function Canvas({ slide, className }: CanvasProps) {
             >
               <Quote className="w-12 h-12 text-blue-300 mx-auto mb-6" />
               <blockquote className="text-3xl font-medium text-slate-800 leading-relaxed mb-8">
-                "{(content.quote as string) || '인용문을 입력하세요'}"
+                "{quote}"
               </blockquote>
-              {content.author && (
+              {hasText(author) && (
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   transition={{ delay: 0.2 }}
                   className="flex items-center justify-center gap-3"
                 >
-                  {content.authorImage && (
+                  {hasText(authorImage) && (
                     <div className="w-12 h-12 rounded-full bg-slate-200 overflow-hidden">
-                      <img src={content.authorImage as string} alt="" className="w-full h-full object-cover" />
+                      <img src={authorImage} alt="" className="w-full h-full object-cover" />
                     </div>
                   )}
                   <div className="text-left">
-                    <p className="font-semibold text-slate-700">{content.author as string}</p>
-                    {content.authorTitle && (
-                      <p className="text-sm text-slate-500">{content.authorTitle as string}</p>
+                    <p className="font-semibold text-slate-700">{author}</p>
+                    {hasText(authorTitle) && (
+                      <p className="text-sm text-slate-500">{authorTitle}</p>
                     )}
                   </div>
                 </motion.div>
@@ -234,10 +255,20 @@ export function Canvas({ slide, className }: CanvasProps) {
             </motion.div>
           </div>
         )
+      }
 
-      case 'table':
-        const headers = Array.isArray(content.headers) ? content.headers as string[] : ['헤더 1', '헤더 2', '헤더 3']
-        const rows = Array.isArray(content.rows) ? content.rows as string[][] : [['데이터 1', '데이터 2', '데이터 3']]
+      case 'table': {
+        const headers = Array.isArray(content.headers)
+          ? content.headers.map((header) => toText(header)).filter(Boolean)
+          : ['헤더 1', '헤더 2', '헤더 3']
+        const rows = Array.isArray(content.rows)
+          ? content.rows.map((row) => (
+            Array.isArray(row)
+              ? row.map((cell) => toText(cell))
+              : []
+          ))
+          : [['데이터 1', '데이터 2', '데이터 3']]
+
         return (
           <div className="h-full flex flex-col justify-center px-12">
             <motion.h2
@@ -246,15 +277,15 @@ export function Canvas({ slide, className }: CanvasProps) {
               className="text-3xl font-bold text-slate-900 mb-8 text-center flex items-center justify-center gap-3"
             >
               <Table className="w-8 h-8 text-blue-500" />
-              {(content.title as string) || '표'}
+              {toText(content.title, '표')}
             </motion.h2>
             <div className="overflow-hidden rounded-xl border border-slate-200">
               <table className="w-full">
                 <thead>
                   <tr className="bg-slate-100">
-                    {headers.map((header, i) => (
+                    {headers.map((header, index) => (
                       <th
-                        key={i}
+                        key={index}
                         className="px-6 py-4 text-left text-sm font-semibold text-slate-700 border-b border-slate-200"
                       >
                         {header}
@@ -263,16 +294,16 @@ export function Canvas({ slide, className }: CanvasProps) {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((row, i) => (
+                  {rows.map((row, rowIndex) => (
                     <motion.tr
-                      key={i}
+                      key={rowIndex}
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
-                      transition={{ delay: i * 0.1 }}
-                      className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}
+                      transition={{ delay: rowIndex * 0.1 }}
+                      className={rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50'}
                     >
-                      {row.map((cell, j) => (
-                        <td key={j} className="px-6 py-4 text-sm text-slate-600 border-b border-slate-100">
+                      {row.map((cell, cellIndex) => (
+                        <td key={cellIndex} className="px-6 py-4 text-sm text-slate-600 border-b border-slate-100">
                           {cell}
                         </td>
                       ))}
@@ -283,6 +314,7 @@ export function Canvas({ slide, className }: CanvasProps) {
             </div>
           </div>
         )
+      }
 
       default:
         return (
@@ -298,7 +330,7 @@ export function Canvas({ slide, className }: CanvasProps) {
       initial={{ opacity: 0, scale: 0.98 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ duration: 0.2 }}
-      className={`w-full max-w-4xl aspect-video rounded-xl overflow-hidden shadow-2xl border border-slate-200 bg-white ${className}`}
+      className={`w-full max-w-4xl aspect-video rounded-xl overflow-hidden shadow-2xl border border-slate-200 bg-white ${className ?? ''}`}
     >
       {renderSlideContent()}
     </motion.div>

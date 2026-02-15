@@ -2,7 +2,8 @@
 export default {
   content: [
     "./src/client/**/*.{js,ts,jsx,tsx}",
-    "./src/components/**/*.{js,ts,jsx,tsx}",
+    "./src/components/slide-editor/**/*.{js,ts,jsx,tsx}",
+    "./src/components/ui/button.tsx",
   ],
   theme: {
     extend: {

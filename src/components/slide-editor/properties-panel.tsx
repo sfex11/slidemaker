@@ -3,7 +3,7 @@ import { Plus, Trash2, GripVertical } from 'lucide-react'
 
 interface Slide {
   id: string
-  type: 'title' | 'card-grid' | 'comparison' | 'timeline' | 'quote' | 'table'
+  type: string
   content: Record<string, unknown>
 }
 
