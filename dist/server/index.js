@@ -57738,12 +57738,14 @@ JSON \uBC30\uC5F4\uB85C\uB9CC \uC751\uB2F5\uD558\uC138\uC694.`;
     console.log("AI \uC751\uB2F5:", aiContent.substring(0, 500));
     const jsonMatch = aiContent.match(/\[[\s\S]*\]/);
     if (jsonMatch) {
-      const slides = JSON.parse(jsonMatch[0]);
-      console.log("\uD30C\uC2F1\uB41C \uC2AC\uB77C\uC774\uB4DC:", JSON.stringify(slides, null, 2));
-      return slides.map((s) => ({
-        type: s.type || "title",
-        content: s.content || {}
-      }));
+      const rawSlides = JSON.parse(jsonMatch[0]);
+      return rawSlides.map((s) => {
+        const { type, ...rest } = s;
+        return {
+          type: type || "title",
+          content: rest
+        };
+      });
     }
     throw new Error("JSON \uD30C\uC2F1 \uC2E4\uD328");
   } catch (error2) {

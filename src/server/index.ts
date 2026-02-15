@@ -291,13 +291,15 @@ JSON 배열로만 응답하세요.`
     // JSON 추출
     const jsonMatch = aiContent.match(/\[[\s\S]*\]/)
     if (jsonMatch) {
-      const slides = JSON.parse(jsonMatch[0])
-      console.log('파싱된 슬라이드:', JSON.stringify(slides, null, 2))
-      // content가 undefined인 경우 기본값 설정
-      return slides.map((s: any) => ({
-        type: s.type || 'title',
-        content: s.content || {}
-      }))
+      const rawSlides = JSON.parse(jsonMatch[0])
+      // AI 응답을 content로 감싸서 변환
+      return rawSlides.map((s: any) => {
+        const { type, ...rest } = s
+        return {
+          type: type || 'title',
+          content: rest // type을 제외한 모든 필드를 content로
+        }
+      })
     }
 
     throw new Error('JSON 파싱 실패')
