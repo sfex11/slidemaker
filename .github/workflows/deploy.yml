@@ -4,9 +4,14 @@ on:
   push:
     branches: [master]
 
+concurrency:
+  group: deploy-oracle-production
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Deploy via SSH
@@ -17,33 +22,65 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           script: |
-            cd ~/slidemaker
+            set -euo pipefail
 
-            # 최신 코드 가져오기
-            git pull origin master
+            APP_DIR="/home/ubuntu/slidemaker"
+            REPO_URL="https://github.com/sfex11/slidemaker.git"
+            SERVICE_NAME="slide-maker"
+            LOCK_FILE="/tmp/${SERVICE_NAME}.deploy.lock"
+            DB_FILE="${APP_DIR}/prisma/dev.db"
+            DB_BACKUP="/tmp/${SERVICE_NAME}.dev.db.bak"
+
+            # 중복 배포 방지
+            exec 9>"${LOCK_FILE}"
+            flock -n 9 || { echo "Another deployment is already running"; exit 1; }
+
+            export PATH="/home/ubuntu/.bun/bin:${PATH}"
 
             # Bun 설치 확인
-            if ! command -v bun &> /dev/null; then
+            if ! command -v bun >/dev/null 2>&1; then
               curl -fsSL https://bun.sh/install | bash
+              export PATH="/home/ubuntu/.bun/bin:${PATH}"
             fi
 
-            # 의존성 설치
-            bun install
+            # 절대경로 고정: 디렉토리가 없으면 클론
+            if [ ! -d "${APP_DIR}/.git" ]; then
+              sudo mkdir -p "${APP_DIR}"
+              sudo chown -R ubuntu:ubuntu "${APP_DIR}"
+              git clone "${REPO_URL}" "${APP_DIR}"
+            fi
 
-            # Prisma 설정
+            # 추적된 prisma/dev.db가 덮어써지는 문제 방지(임시 백업)
+            if [ -f "${DB_FILE}" ]; then
+              cp "${DB_FILE}" "${DB_BACKUP}"
+            fi
+
+            cd "${APP_DIR}"
+
+            # 안전한 동기화: pull 대신 원격 master로 강제 정렬
+            git fetch --prune origin master
+            git reset --hard origin/master
+            git clean -fd
+
+            # DB 복원
+            if [ -f "${DB_BACKUP}" ]; then
+              cp "${DB_BACKUP}" "${DB_FILE}"
+            fi
+
+            # 의존성/DB/빌드
+            bun install --frozen-lockfile
             bun run db:generate
             bun run db:push
-
-            # 빌드
             bun run build
 
-            # systemd 서비스 파일 복사 (최초 1회만)
-            if [ ! -f /etc/systemd/system/slide-maker.service ]; then
-              sudo cp deploy/slide-maker.service /etc/systemd/system/
-              sudo systemctl daemon-reload
-              sudo systemctl enable slide-maker
-            fi
+            # 서비스 파일은 매 배포 시 최신으로 반영
+            sudo install -m 644 "${APP_DIR}/deploy/slide-maker.service" "/etc/systemd/system/${SERVICE_NAME}.service"
+            sudo systemctl daemon-reload
+            sudo systemctl enable "${SERVICE_NAME}"
 
-            # 서비스 재시작
-            sudo systemctl restart slide-maker
-            sudo systemctl status slide-maker
+            # 서비스 재시작 및 상태 확인
+            sudo systemctl restart "${SERVICE_NAME}"
+            sudo systemctl --no-pager --full status "${SERVICE_NAME}" | sed -n '1,30p'
+
+            # 헬스체크(앱 내부 포트 기준)
+            curl -fsS --max-time 10 "http://127.0.0.1:3001/api/health"
