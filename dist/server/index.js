@@ -57591,7 +57591,11 @@ app.get("/api/projects", authMiddleware, async (req, res) => {
     include: { slides: { orderBy: { order: "asc" } } },
     orderBy: { updatedAt: "desc" }
   });
-  res.json({ projects });
+  const parsedProjects = projects.map((p) => ({
+    ...p,
+    slides: p.slides.map((s) => ({ ...s, content: JSON.parse(s.content) }))
+  }));
+  res.json({ projects: parsedProjects });
 });
 app.get("/api/projects/:id", authMiddleware, async (req, res) => {
   const project = await prisma.project.findFirst({
@@ -57600,7 +57604,11 @@ app.get("/api/projects/:id", authMiddleware, async (req, res) => {
   });
   if (!project)
     return res.status(404).json({ error: "\uD504\uB85C\uC81D\uD2B8 \uC5C6\uC74C" });
-  res.json({ project });
+  const parsedProject = {
+    ...project,
+    slides: project.slides.map((s) => ({ ...s, content: JSON.parse(s.content) }))
+  };
+  res.json({ project: parsedProject });
 });
 app.post("/api/projects", authMiddleware, async (req, res) => {
   const { name, description, slides } = req.body;
@@ -57612,14 +57620,18 @@ app.post("/api/projects", authMiddleware, async (req, res) => {
       slides: slides ? {
         create: slides.map((s, i) => ({
           type: s.type,
-          content: s.content,
+          content: JSON.stringify(s.content),
           order: i
         }))
       } : undefined
     },
     include: { slides: true }
   });
-  res.json({ project });
+  const parsedProject = {
+    ...project,
+    slides: project.slides.map((s) => ({ ...s, content: JSON.parse(s.content) }))
+  };
+  res.json({ project: parsedProject });
 });
 app.put("/api/projects/:id", authMiddleware, async (req, res) => {
   const { name, description } = req.body;
@@ -57644,17 +57656,17 @@ app.post("/api/projects/:projectId/slides", authMiddleware, async (req, res) => 
     return res.status(404).json({ error: "\uD504\uB85C\uC81D\uD2B8 \uC5C6\uC74C" });
   const count = await prisma.slide.count({ where: { projectId: req.params.projectId } });
   const slide = await prisma.slide.create({
-    data: { type, content, order: count, projectId: req.params.projectId }
+    data: { type, content: JSON.stringify(content), order: count, projectId: req.params.projectId }
   });
-  res.json({ slide });
+  res.json({ slide: { ...slide, content } });
 });
 app.put("/api/slides/:id", authMiddleware, async (req, res) => {
   const { type, content, order } = req.body;
   const slide = await prisma.slide.update({
     where: { id: req.params.id },
-    data: { type, content, order }
+    data: { type, content: JSON.stringify(content), order }
   });
-  res.json({ slide });
+  res.json({ slide: { ...slide, content } });
 });
 app.delete("/api/slides/:id", authMiddleware, async (req, res) => {
   await prisma.slide.delete({ where: { id: req.params.id } });
@@ -57753,14 +57765,18 @@ app.post("/api/generate/from-url", authMiddleware, async (req, res) => {
         slides: {
           create: slides.map((s, i) => ({
             type: s.type,
-            content: s.content,
+            content: JSON.stringify(s.content),
             order: i
           }))
         }
       },
       include: { slides: { orderBy: { order: "asc" } } }
     });
-    res.json({ project });
+    const parsedProject = {
+      ...project,
+      slides: project.slides.map((s) => ({ ...s, content: JSON.parse(s.content) }))
+    };
+    res.json({ project: parsedProject });
   } catch (error2) {
     console.error("URL \uC2AC\uB77C\uC774\uB4DC \uC0DD\uC131 \uC624\uB958:", error2);
     res.status(500).json({ error: "\uC2AC\uB77C\uC774\uB4DC \uC0DD\uC131 \uC2E4\uD328" });
@@ -57782,14 +57798,18 @@ app.post("/api/generate/from-markdown", authMiddleware, async (req, res) => {
         slides: {
           create: slides.map((s, i) => ({
             type: s.type,
-            content: s.content,
+            content: JSON.stringify(s.content),
             order: i
           }))
         }
       },
       include: { slides: { orderBy: { order: "asc" } } }
     });
-    res.json({ project });
+    const parsedProject = {
+      ...project,
+      slides: project.slides.map((s) => ({ ...s, content: JSON.parse(s.content) }))
+    };
+    res.json({ project: parsedProject });
   } catch (error2) {
     console.error("\uB9C8\uD06C\uB2E4\uC6B4 \uC2AC\uB77C\uC774\uB4DC \uC0DD\uC131 \uC624\uB958:", error2);
     res.status(500).json({ error: "\uC2AC\uB77C\uC774\uB4DC \uC0DD\uC131 \uC2E4\uD328" });
@@ -57811,14 +57831,18 @@ app.post("/api/generate/from-text", authMiddleware, async (req, res) => {
         slides: {
           create: slides.map((s, i) => ({
             type: s.type,
-            content: s.content,
+            content: JSON.stringify(s.content),
             order: i
           }))
         }
       },
       include: { slides: { orderBy: { order: "asc" } } }
     });
-    res.json({ project });
+    const parsedProject = {
+      ...project,
+      slides: project.slides.map((s) => ({ ...s, content: JSON.parse(s.content) }))
+    };
+    res.json({ project: parsedProject });
   } catch (error2) {
     console.error("\uD14D\uC2A4\uD2B8 \uC2AC\uB77C\uC774\uB4DC \uC0DD\uC131 \uC624\uB958:", error2);
     res.status(500).json({ error: "\uC2AC\uB77C\uC774\uB4DC \uC0DD\uC131 \uC2E4\uD328" });

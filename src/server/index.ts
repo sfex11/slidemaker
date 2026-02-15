@@ -111,7 +111,12 @@ app.get('/api/projects', authMiddleware, async (req, res) => {
     include: { slides: { orderBy: { order: 'asc' } } },
     orderBy: { updatedAt: 'desc' }
   })
-  res.json({ projects })
+  // content 파싱
+  const parsedProjects = projects.map(p => ({
+    ...p,
+    slides: p.slides.map(s => ({ ...s, content: JSON.parse(s.content) }))
+  }))
+  res.json({ projects: parsedProjects })
 })
 
 app.get('/api/projects/:id', authMiddleware, async (req, res) => {
@@ -120,7 +125,12 @@ app.get('/api/projects/:id', authMiddleware, async (req, res) => {
     include: { slides: { orderBy: { order: 'asc' } } }
   })
   if (!project) return res.status(404).json({ error: '프로젝트 없음' })
-  res.json({ project })
+  // content 파싱
+  const parsedProject = {
+    ...project,
+    slides: project.slides.map(s => ({ ...s, content: JSON.parse(s.content) }))
+  }
+  res.json({ project: parsedProject })
 })
 
 app.post('/api/projects', authMiddleware, async (req, res) => {
@@ -133,14 +143,19 @@ app.post('/api/projects', authMiddleware, async (req, res) => {
       slides: slides ? {
         create: slides.map((s: any, i: number) => ({
           type: s.type,
-          content: s.content,
+          content: JSON.stringify(s.content),
           order: i
         }))
       } : undefined
     },
     include: { slides: true }
   })
-  res.json({ project })
+  // content 파싱
+  const parsedProject = {
+    ...project,
+    slides: project.slides.map(s => ({ ...s, content: JSON.parse(s.content) }))
+  }
+  res.json({ project: parsedProject })
 })
 
 app.put('/api/projects/:id', authMiddleware, async (req, res) => {
@@ -169,18 +184,18 @@ app.post('/api/projects/:projectId/slides', authMiddleware, async (req, res) => 
 
   const count = await prisma.slide.count({ where: { projectId: req.params.projectId } })
   const slide = await prisma.slide.create({
-    data: { type, content, order: count, projectId: req.params.projectId }
+    data: { type, content: JSON.stringify(content), order: count, projectId: req.params.projectId }
   })
-  res.json({ slide })
+  res.json({ slide: { ...slide, content } })
 })
 
 app.put('/api/slides/:id', authMiddleware, async (req, res) => {
   const { type, content, order } = req.body
   const slide = await prisma.slide.update({
     where: { id: req.params.id },
-    data: { type, content, order }
+    data: { type, content: JSON.stringify(content), order }
   })
-  res.json({ slide })
+  res.json({ slide: { ...slide, content } })
 })
 
 app.delete('/api/slides/:id', authMiddleware, async (req, res) => {
@@ -315,7 +330,7 @@ app.post('/api/generate/from-url', authMiddleware, async (req, res) => {
         slides: {
           create: slides.map((s: any, i: number) => ({
             type: s.type,
-            content: s.content,
+            content: JSON.stringify(s.content),
             order: i
           }))
         }
@@ -323,7 +338,12 @@ app.post('/api/generate/from-url', authMiddleware, async (req, res) => {
       include: { slides: { orderBy: { order: 'asc' } } }
     })
 
-    res.json({ project })
+    // content 파싱 후 반환
+    const parsedProject = {
+      ...project,
+      slides: project.slides.map(s => ({ ...s, content: JSON.parse(s.content) }))
+    }
+    res.json({ project: parsedProject })
   } catch (error) {
     console.error('URL 슬라이드 생성 오류:', error)
     res.status(500).json({ error: '슬라이드 생성 실패' })
@@ -353,7 +373,7 @@ app.post('/api/generate/from-markdown', authMiddleware, async (req, res) => {
         slides: {
           create: slides.map((s: any, i: number) => ({
             type: s.type,
-            content: s.content,
+            content: JSON.stringify(s.content),
             order: i
           }))
         }
@@ -361,7 +381,12 @@ app.post('/api/generate/from-markdown', authMiddleware, async (req, res) => {
       include: { slides: { orderBy: { order: 'asc' } } }
     })
 
-    res.json({ project })
+    // content 파싱 후 반환
+    const parsedProject = {
+      ...project,
+      slides: project.slides.map(s => ({ ...s, content: JSON.parse(s.content) }))
+    }
+    res.json({ project: parsedProject })
   } catch (error) {
     console.error('마크다운 슬라이드 생성 오류:', error)
     res.status(500).json({ error: '슬라이드 생성 실패' })
@@ -391,7 +416,7 @@ app.post('/api/generate/from-text', authMiddleware, async (req, res) => {
         slides: {
           create: slides.map((s: any, i: number) => ({
             type: s.type,
-            content: s.content,
+            content: JSON.stringify(s.content),
             order: i
           }))
         }
@@ -399,7 +424,12 @@ app.post('/api/generate/from-text', authMiddleware, async (req, res) => {
       include: { slides: { orderBy: { order: 'asc' } } }
     })
 
-    res.json({ project })
+    // content 파싱 후 반환
+    const parsedProject = {
+      ...project,
+      slides: project.slides.map(s => ({ ...s, content: JSON.parse(s.content) }))
+    }
+    res.json({ project: parsedProject })
   } catch (error) {
     console.error('텍스트 슬라이드 생성 오류:', error)
     res.status(500).json({ error: '슬라이드 생성 실패' })
