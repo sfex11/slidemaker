@@ -3,6 +3,7 @@ import cors from 'cors'
 import bcrypt from 'bcryptjs'
 import { PrismaClient } from '@prisma/client'
 import path from 'path'
+import fs from 'node:fs/promises'
 import crypto from 'crypto'
 import dns from 'dns/promises'
 import net from 'net'
@@ -20,7 +21,17 @@ interface DeckSlide {
 
 type AuthenticatedRequest = express.Request & { userId: string }
 
-class RequestValidationError extends Error {}
+class RequestValidationError extends Error {
+  code: string
+  status: number
+
+  constructor(message: string, code = 'BAD_REQUEST', status = 400) {
+    super(message)
+    this.name = 'RequestValidationError'
+    this.code = code
+    this.status = status
+  }
+}
 
 const app = express()
 const prisma = new PrismaClient()
@@ -29,6 +40,14 @@ const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const GENERATION_TIMEOUT_MS = 45_000
 const MAX_SOURCE_CHARS = 40_000
 const MAX_PDF_BYTES = 8 * 1024 * 1024
+const MAX_TEXT_SOURCE_BYTES = 2 * 1024 * 1024
+const URL_FETCH_TIMEOUT_MS = 12_000
+const MAX_URL_FETCH_RETRIES = 2
+const allowedFileRoots = (process.env.ALLOWED_FILE_ROOTS || `${process.cwd()},/tmp`)
+  .split(',')
+  .map((root) => root.trim())
+  .filter(Boolean)
+  .map((root) => path.resolve(root))
 
 const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000,http://127.0.0.1:3000')
   .split(',')
@@ -89,6 +108,145 @@ const sanitizeText = (value: string, maxLength = MAX_SOURCE_CHARS) => (
     .slice(0, maxLength)
 )
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+const parseRetryAfterMs = (headerValue: string | null) => {
+  if (!headerValue) return 0
+  const seconds = Number(headerValue)
+  if (Number.isFinite(seconds) && seconds > 0) {
+    return Math.min(seconds * 1000, 12_000)
+  }
+
+  const dateMs = Date.parse(headerValue)
+  if (Number.isNaN(dateMs)) return 0
+  const diff = dateMs - Date.now()
+  return diff > 0 ? Math.min(diff, 12_000) : 0
+}
+
+const extractTextFromHtml = (html: string) => {
+  const $ = cheerio.load(html)
+  const title = $('title').first().text()
+  const metaDescription =
+    $('meta[name="description"]').attr('content') ||
+    $('meta[property="og:description"]').attr('content') ||
+    $('meta[name="twitter:description"]').attr('content') ||
+    ''
+
+  $('script, style, nav, header, footer, aside, noscript, iframe, svg').remove()
+
+  const selectors = ['article', 'main', '.content', '.post', '.article', '#content']
+  let bodyText = ''
+  for (const selector of selectors) {
+    const el = $(selector).first()
+    if (el.length && el.text().length > 200) {
+      bodyText = el.text()
+      break
+    }
+  }
+  if (!bodyText) bodyText = $('body').text()
+
+  return sanitizeText([title, metaDescription, bodyText].filter(Boolean).join('\n'))
+}
+
+const looksLikeBlockedHtml = (html: string) => {
+  const snippet = html.slice(0, 12_000)
+  const blockedPatterns = [
+    /captcha/i,
+    /cloudflare/i,
+    /bot verification/i,
+    /access denied/i,
+    /cf-chl/i,
+    /are you human/i,
+  ]
+  return blockedPatterns.some((pattern) => pattern.test(snippet))
+}
+
+const isLikelyFilePath = (value: string) => {
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  if (trimmed.startsWith('file://')) return true
+  if (trimmed.startsWith('/') || trimmed.startsWith('./') || trimmed.startsWith('../') || trimmed.startsWith('~')) return true
+  if (/^[A-Za-z]:[\\/]/.test(trimmed)) return true
+  if (/^[^/\s]+\.[^/\s]+(\/.*)?$/.test(trimmed)) return false
+  if (!/^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(trimmed) && /[\\/]/.test(trimmed)) return true
+  return false
+}
+
+const normalizeInputPath = (value: string) => {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+
+  if (trimmed.startsWith('file://')) {
+    try {
+      const parsed = new URL(trimmed)
+      const decoded = decodeURIComponent(parsed.pathname)
+      if (/^\/[A-Za-z]:/.test(decoded)) return decoded.slice(1)
+      return decoded
+    } catch {
+      throw new RequestValidationError('유효한 file:// 경로를 입력하세요', 'INVALID_FILE_URL')
+    }
+  }
+
+  if (trimmed === '~') return process.env.HOME || trimmed
+  if (trimmed.startsWith('~/')) return path.join(process.env.HOME || '', trimmed.slice(2))
+  return trimmed
+}
+
+const isPathInside = (candidate: string, root: string) => {
+  const relative = path.relative(root, candidate)
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+const resolveSafeFilePath = async (rawInputPath: string) => {
+  const normalizedInput = normalizeInputPath(rawInputPath)
+  const absolutePath = path.resolve(normalizedInput)
+
+  const allowedByConfiguredRoots = allowedFileRoots.some((root) => isPathInside(absolutePath, root))
+  if (!allowedByConfiguredRoots) {
+    throw new RequestValidationError(
+      `허용된 파일 경로에서만 읽을 수 있습니다. (${allowedFileRoots.join(', ')})`,
+      'FILE_PATH_NOT_ALLOWED',
+      403
+    )
+  }
+
+  let realPath: string
+  try {
+    realPath = await fs.realpath(absolutePath)
+  } catch {
+    throw new RequestValidationError('파일 경로를 찾을 수 없습니다', 'FILE_NOT_FOUND')
+  }
+
+  const allowedByRealPath = allowedFileRoots.some((root) => isPathInside(realPath, root))
+  if (!allowedByRealPath) {
+    throw new RequestValidationError(
+      `허용된 파일 경로에서만 읽을 수 있습니다. (${allowedFileRoots.join(', ')})`,
+      'FILE_PATH_NOT_ALLOWED',
+      403
+    )
+  }
+
+  let stats: Awaited<ReturnType<typeof fs.stat>>
+  try {
+    stats = await fs.stat(realPath)
+  } catch {
+    throw new RequestValidationError('파일 정보를 읽을 수 없습니다', 'FILE_STAT_FAILED')
+  }
+
+  if (!stats.isFile()) {
+    throw new RequestValidationError('파일 경로를 입력하세요', 'NOT_A_FILE')
+  }
+
+  return { realPath, size: stats.size }
+}
+
+const detectSourceTypeByFilePath = (filePath: string): SourceType => {
+  const ext = path.extname(filePath).toLowerCase()
+  if (ext === '.pdf') return 'pdf'
+  if (ext === '.md' || ext === '.markdown') return 'markdown'
+  return 'url'
+}
+
 const normalizeInputUrl = (value: string) => {
   const trimmed = value.trim()
   if (!trimmed) return ''
@@ -101,14 +259,14 @@ const normalizeInputUrl = (value: string) => {
 
 const authMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
   const token = req.headers.authorization?.replace('Bearer ', '')
-  if (!token) return res.status(401).json({ error: '인증 필요' })
+  if (!token) return res.status(401).json({ error: '인증 필요', code: 'AUTH_REQUIRED' })
 
   const session = sessions.get(token)
-  if (!session) return res.status(401).json({ error: '인증 필요' })
+  if (!session) return res.status(401).json({ error: '인증 필요', code: 'AUTH_REQUIRED' })
 
   if (Date.now() > session.expires) {
     sessions.delete(token)
-    return res.status(401).json({ error: '세션 만료' })
+    return res.status(401).json({ error: '세션 만료', code: 'SESSION_EXPIRED' })
   }
 
   ;(req as AuthenticatedRequest).userId = session.userId
@@ -180,69 +338,51 @@ const assertSafePublicUrl = async (rawUrl: string) => {
   return parsed
 }
 
-const fetchUrlContent = async (rawUrl: string) => {
-  const safeUrl = await assertSafePublicUrl(rawUrl)
-  let response: Response
-  try {
-    response = await fetch(safeUrl.toString(), {
-      signal: AbortSignal.timeout(12_000),
-      redirect: 'follow',
-      headers: {
-        'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36',
-        accept: 'text/html,application/xhtml+xml',
-        'accept-language': 'ko,en-US;q=0.9,en;q=0.8'
+const fetchWithRetry = async (url: string) => {
+  let lastNetworkError: Error | null = null
+
+  for (let attempt = 0; attempt <= MAX_URL_FETCH_RETRIES; attempt += 1) {
+    let response: Response
+    try {
+      response = await fetch(url, {
+        signal: AbortSignal.timeout(URL_FETCH_TIMEOUT_MS),
+        redirect: 'follow',
+        headers: {
+          'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36',
+          accept: 'text/html,application/xhtml+xml,text/plain,application/pdf',
+          'accept-language': 'ko,en-US;q=0.9,en;q=0.8'
+        }
+      })
+    } catch (error) {
+      lastNetworkError = error instanceof Error ? error : new Error('request failed')
+      if (attempt < MAX_URL_FETCH_RETRIES) {
+        await sleep(350 * (attempt + 1))
+        continue
       }
-    })
-  } catch (error) {
-    if (error instanceof Error && error.name === 'TimeoutError') {
-      throw new RequestValidationError('웹페이지 요청 시간이 초과되었습니다')
-    }
-    throw new RequestValidationError('웹페이지 연결에 실패했습니다')
-  }
-
-  if (!response.ok) {
-    throw new RequestValidationError(`웹페이지를 가져오지 못했습니다 (HTTP ${response.status})`)
-  }
-
-  const contentType = (response.headers.get('content-type') || '').toLowerCase()
-  if (!contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
-    throw new RequestValidationError('HTML 문서 URL만 지원합니다')
-  }
-
-  const responseSize = Number(response.headers.get('content-length') || 0)
-  if (responseSize > 2_000_000) {
-    throw new RequestValidationError('문서 크기가 너무 큽니다')
-  }
-
-  await assertSafePublicUrl(response.url)
-  const html = await response.text()
-  const $ = cheerio.load(html)
-  $('script, style, nav, header, footer, aside, noscript, iframe').remove()
-
-  const selectors = ['article', 'main', '.content', '.post', '.article', '#content']
-  let text = ''
-  for (const selector of selectors) {
-    const el = $(selector).first()
-    if (el.length && el.text().length > 200) {
-      text = el.text()
       break
     }
+
+    if ((response.status === 429 || response.status >= 500) && attempt < MAX_URL_FETCH_RETRIES) {
+      const retryAfter = parseRetryAfterMs(response.headers.get('retry-after'))
+      await sleep(Math.max(retryAfter, 400 * (attempt + 1)))
+      continue
+    }
+
+    return response
   }
-  if (!text) text = $('body').text()
-  return sanitizeText(text)
+
+  if (lastNetworkError?.name === 'TimeoutError') {
+    throw new RequestValidationError('웹페이지 요청 시간이 초과되었습니다', 'URL_TIMEOUT')
+  }
+  throw new RequestValidationError('웹페이지 연결에 실패했습니다', 'URL_CONNECTION_FAILED')
 }
 
-const extractPdfContent = async (base64: string) => {
-  if (!base64) {
-    throw new RequestValidationError('PDF 파일이 비어 있습니다')
-  }
-
-  const buffer = Buffer.from(base64, 'base64')
+const extractPdfTextFromBuffer = async (buffer: Buffer) => {
   if (buffer.byteLength === 0) {
-    throw new RequestValidationError('PDF 데이터가 올바르지 않습니다')
+    throw new RequestValidationError('PDF 데이터가 비어 있습니다', 'PDF_EMPTY')
   }
   if (buffer.byteLength > MAX_PDF_BYTES) {
-    throw new RequestValidationError('PDF 크기는 8MB 이하만 지원합니다')
+    throw new RequestValidationError('PDF 크기는 8MB 이하만 지원합니다', 'PDF_TOO_LARGE')
   }
 
   let PDFParseCtor: new (params: { data: Buffer }) => { getText: () => Promise<{ text: string }>; destroy: () => Promise<void> }
@@ -259,7 +399,7 @@ const extractPdfContent = async (base64: string) => {
     parser = new PDFParseCtor({ data: buffer })
     parsed = await parser.getText()
   } catch {
-    throw new RequestValidationError('PDF 텍스트 추출에 실패했습니다')
+    throw new RequestValidationError('PDF 텍스트 추출에 실패했습니다', 'PDF_PARSE_FAILED')
   } finally {
     if (parser) {
       await parser.destroy().catch(() => undefined)
@@ -267,8 +407,138 @@ const extractPdfContent = async (base64: string) => {
   }
 
   const cleaned = sanitizeText(parsed.text)
-  if (!cleaned) throw new RequestValidationError('PDF에서 텍스트를 찾지 못했습니다')
+  if (!cleaned) throw new RequestValidationError('PDF에서 텍스트를 찾지 못했습니다', 'PDF_TEXT_NOT_FOUND')
   return cleaned
+}
+
+const fetchUrlContent = async (rawUrl: string) => {
+  const safeUrl = await assertSafePublicUrl(rawUrl)
+  const response = await fetchWithRetry(safeUrl.toString())
+
+  if (response.status === 403) {
+    throw new RequestValidationError(
+      '대상 웹페이지 접근이 차단되었습니다 (HTTP 403). PDF/마크다운 입력을 사용해보세요.',
+      'URL_FORBIDDEN'
+    )
+  }
+  if (!response.ok) {
+    throw new RequestValidationError(`웹페이지를 가져오지 못했습니다 (HTTP ${response.status})`, 'URL_FETCH_FAILED')
+  }
+
+  await assertSafePublicUrl(response.url)
+
+  const contentType = (response.headers.get('content-type') || '').toLowerCase()
+  const responseSize = Number(response.headers.get('content-length') || 0)
+  if (responseSize > MAX_TEXT_SOURCE_BYTES && !contentType.includes('application/pdf')) {
+    throw new RequestValidationError('문서 크기가 너무 큽니다', 'SOURCE_TOO_LARGE')
+  }
+
+  if (contentType.includes('application/pdf')) {
+    const pdfBuffer = Buffer.from(await response.arrayBuffer())
+    return extractPdfTextFromBuffer(pdfBuffer)
+  }
+
+  if (contentType.includes('text/plain') || contentType.includes('text/markdown')) {
+    const text = sanitizeText(await response.text())
+    if (!text || text.length < 20) {
+      throw new RequestValidationError('문서 본문이 너무 짧습니다', 'SOURCE_TEXT_TOO_SHORT')
+    }
+    return text
+  }
+
+  if (!contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
+    throw new RequestValidationError(`지원하지 않는 콘텐츠 타입입니다: ${contentType || 'unknown'}`, 'UNSUPPORTED_CONTENT_TYPE')
+  }
+
+  const html = await response.text()
+  if (looksLikeBlockedHtml(html)) {
+    throw new RequestValidationError('봇 차단/인증 페이지가 감지되었습니다. PDF/마크다운 입력을 사용해보세요.', 'ANTI_BOT_DETECTED')
+  }
+
+  const text = extractTextFromHtml(html)
+  if (!text || text.length < 20) {
+    throw new RequestValidationError('웹페이지 본문을 추출하지 못했습니다', 'SOURCE_TEXT_TOO_SHORT')
+  }
+  return text
+}
+
+const extractPdfContent = async (base64: string) => {
+  if (!base64) {
+    throw new RequestValidationError('PDF 파일이 비어 있습니다', 'PDF_EMPTY')
+  }
+
+  const buffer = Buffer.from(base64, 'base64')
+  if (buffer.byteLength === 0) {
+    throw new RequestValidationError('PDF 데이터가 올바르지 않습니다', 'PDF_INVALID_BASE64')
+  }
+
+  return extractPdfTextFromBuffer(buffer)
+}
+
+interface ResolvedInputSource {
+  sourceText: string
+  sourceLabel: string
+  projectNameHint: string
+  sourceType: SourceType
+}
+
+const readSourceFromFilePath = async (inputPath: string): Promise<ResolvedInputSource> => {
+  const { realPath, size } = await resolveSafeFilePath(inputPath)
+  const ext = path.extname(realPath).toLowerCase()
+  const baseName = path.basename(realPath)
+  const projectNameHint = path.basename(realPath, ext) || 'Local File Deck'
+  const sourceType = detectSourceTypeByFilePath(realPath)
+
+  if (size <= 0) {
+    throw new RequestValidationError('파일이 비어 있습니다', 'FILE_EMPTY')
+  }
+
+  if (ext === '.pdf') {
+    const buffer = Buffer.from(await fs.readFile(realPath))
+    const sourceText = await extractPdfTextFromBuffer(buffer)
+    return { sourceText, sourceLabel: baseName, projectNameHint, sourceType }
+  }
+
+  if (size > MAX_TEXT_SOURCE_BYTES) {
+    throw new RequestValidationError('텍스트 파일 크기가 너무 큽니다', 'FILE_TOO_LARGE')
+  }
+
+  let fileText: string
+  try {
+    fileText = await fs.readFile(realPath, 'utf-8')
+  } catch {
+    throw new RequestValidationError('텍스트 파일을 읽지 못했습니다', 'FILE_READ_FAILED')
+  }
+
+  const sourceText = (ext === '.html' || ext === '.htm')
+    ? extractTextFromHtml(fileText)
+    : sanitizeText(fileText)
+
+  if (!sourceText || sourceText.length < 20) {
+    throw new RequestValidationError('파일 본문이 너무 짧습니다', 'SOURCE_TEXT_TOO_SHORT')
+  }
+
+  return { sourceText, sourceLabel: baseName, projectNameHint, sourceType }
+}
+
+const resolveInputSource = async (input: string): Promise<ResolvedInputSource> => {
+  const trimmed = input.trim()
+  if (!trimmed) {
+    throw new RequestValidationError('URL 또는 파일 경로를 입력하세요', 'INPUT_REQUIRED')
+  }
+
+  if (isLikelyFilePath(trimmed)) {
+    return readSourceFromFilePath(trimmed)
+  }
+
+  const normalizedUrl = normalizeInputUrl(trimmed)
+  const sourceText = await fetchUrlContent(normalizedUrl)
+  return {
+    sourceText,
+    sourceLabel: normalizedUrl,
+    projectNameHint: normalizedUrl,
+    sourceType: 'url',
+  }
 }
 
 const withGenerationLock = async <T>(userId: string, task: () => Promise<T>) => {
@@ -317,6 +587,44 @@ const normalizeSlides = (rawSlides: DeckSlide[], projectName: string) => {
   }
 
   return safeSlides
+}
+
+const buildFallbackSlidesFromSource = (source: string, sourceType: SourceType, projectName: string): DeckSlide[] => {
+  const normalized = source.replace(/\s+/g, ' ').trim()
+  const parts = normalized
+    .split(/[\n\r]+|(?<=[.!?。！？])\s+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 12)
+
+  const points = (parts.length > 0 ? parts : [normalized])
+    .slice(0, 6)
+    .map((part) => part.length > 120 ? `${part.slice(0, 117)}...` : part)
+
+  const quoteText = points[0] || normalized.slice(0, 140) || '입력 문서를 기반으로 핵심 내용을 추출했습니다.'
+
+  return normalizeSlides([
+    {
+      type: 'title',
+      content: {
+        title: projectName,
+        subtitle: `${sourceType.toUpperCase()} 입력 자동 생성 (안전 모드)`,
+      }
+    },
+    {
+      type: 'card-grid',
+      content: {
+        title: '핵심 요약',
+        items: points.length > 0 ? points : ['입력 문서를 분석해 요약을 생성했습니다.'],
+      }
+    },
+    {
+      type: 'quote',
+      content: {
+        quote: quoteText,
+        author: 'Auto Slide Foundry',
+      }
+    }
+  ], projectName)
 }
 
 const generateSlidesWithAI = async (source: string, sourceType: SourceType, projectName: string): Promise<DeckSlide[]> => {
@@ -568,39 +876,53 @@ const handleGenerate = async (
   req: express.Request,
   res: express.Response,
   sourceType: SourceType,
-  sourceBuilder: () => Promise<{ sourceText: string; sourceLabel: string; projectNameHint: string }>
+  sourceBuilder: () => Promise<{ sourceText: string; sourceLabel: string; projectNameHint: string; sourceType?: SourceType }>
 ) => {
   const userId = getUserId(req)
   try {
-    const { sourceText, sourceLabel, projectNameHint } = await sourceBuilder()
+    const {
+      sourceText,
+      sourceLabel,
+      projectNameHint,
+      sourceType: resolvedSourceType,
+    } = await sourceBuilder()
+
+    const effectiveSourceType = resolvedSourceType || sourceType
+
     if (!sourceText || sourceText.length < 20) {
-      throw new RequestValidationError('입력 문서의 내용이 너무 짧습니다')
+      throw new RequestValidationError('입력 문서의 내용이 너무 짧습니다', 'SOURCE_TEXT_TOO_SHORT')
     }
 
     const customName = typeof req.body?.name === 'string' ? req.body.name : undefined
-    const projectName = deriveProjectName(sourceType, projectNameHint, customName)
+    const projectName = deriveProjectName(effectiveSourceType, projectNameHint, customName)
 
-    const slides = await withGenerationLock(userId, async () => (
-      generateSlidesWithAI(sourceText, sourceType, projectName)
-    ))
+    const slides = await withGenerationLock(userId, async () => {
+      try {
+        return await generateSlidesWithAI(sourceText, effectiveSourceType, projectName)
+      } catch (aiError) {
+        console.error(`${effectiveSourceType} AI 생성 실패, 폴백으로 전환:`, aiError)
+        return buildFallbackSlidesFromSource(sourceText, effectiveSourceType, projectName)
+      }
+    })
 
-    const project = await createProject(userId, projectName, sourceType, sourceLabel, slides)
+    const project = await createProject(userId, projectName, effectiveSourceType, sourceLabel, slides)
     res.json({ project })
   } catch (error) {
     if (error instanceof RequestValidationError) {
-      return res.status(400).json({ error: error.message })
+      return res.status(error.status).json({ error: error.message, code: error.code })
     }
     console.error(`${sourceType} 생성 오류:`, error)
-    res.status(500).json({ error: '자동 생성 실패' })
+    res.status(500).json({ error: '자동 생성 실패', code: 'GENERATION_FAILED' })
   }
 }
 
 app.post('/api/generate/from-url', authMiddleware, async (req, res) => {
   await handleGenerate(req, res, 'url', async () => {
-    const url = typeof req.body?.url === 'string' ? normalizeInputUrl(req.body.url) : ''
-    if (!url) throw new RequestValidationError('URL을 입력하세요')
-    const sourceText = await fetchUrlContent(url)
-    return { sourceText, sourceLabel: url, projectNameHint: url }
+    const rawInput = typeof req.body?.url === 'string'
+      ? req.body.url
+      : (typeof req.body?.input === 'string' ? req.body.input : '')
+    const resolved = await resolveInputSource(rawInput)
+    return resolved
   })
 })
 

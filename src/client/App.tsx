@@ -623,14 +623,14 @@ function App() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
               >
-                <span>웹 주소</span>
+                <span>웹 주소 또는 파일 경로</span>
                 <input
-                  type="url"
+                  type="text"
                   value={urlInput}
                   onChange={(event) => setUrlInput(event.target.value)}
-                  placeholder="https://example.com/article"
+                  placeholder="https://example.com/article 또는 /home/ubuntu/slidemaker/inputs/doc.md"
                 />
-                <small>본문을 추출해 핵심 메시지를 자동 구성합니다.</small>
+                <small>URL, file://, 서버 파일 경로(md/txt/html/pdf)를 자동 감지합니다.</small>
               </motion.div>
             )}
 

@@ -24,10 +24,12 @@ DATABASE_URL="file:./dev.db"
 ZAI_API_KEY=""
 CORS_ORIGIN="http://localhost:3000,http://127.0.0.1:3000"
 SVG_SLIDE_MAKER_ROOT="../svg-slide-maker"
+ALLOWED_FILE_ROOTS="/home/ubuntu/slidemaker,/tmp"
 ```
 
 - `ZAI_API_KEY`가 없으면 AI 생성은 기본 샘플 슬라이드로 폴백됩니다.
 - `SVG_SLIDE_MAKER_ROOT`는 템플릿(`templates/*.html`)을 읽을 루트 경로입니다.
+- `ALLOWED_FILE_ROOTS`는 `/api/generate/from-url`에서 허용할 서버 파일 경로 루트(쉼표 구분)입니다.
 
 ## Install
 
@@ -69,6 +71,8 @@ bun run test:e2e    # playwright
 
 - `GET /api/svg/templates`
   - 사용 가능한 템플릿 목록 조회
+- `POST /api/generate/from-url`
+  - URL 또는 서버 파일 경로(`file://`, `/abs/path`, `./relative/path`) 입력 자동 감지
 - `POST /api/projects/:id/export/html`
   - 프로젝트 슬라이드를 템플릿 기반 HTML deck으로 내보내기
   - body 예시: `{ "templateId": "default" }`
