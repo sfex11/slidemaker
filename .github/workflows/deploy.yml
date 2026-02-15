@@ -83,4 +83,4 @@ jobs:
             sudo systemctl --no-pager --full status "${SERVICE_NAME}" | sed -n '1,30p'
 
             # 헬스체크(앱 내부 포트 기준)
-            curl -fsS --max-time 10 "http://127.0.0.1:3001/api/health"
+            curl -fsS --max-time 10 "http://127.0.0.1:3003/api/health"
