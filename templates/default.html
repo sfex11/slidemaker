@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="template-name" content="Default Auto Deck" />
+    <meta name="template-description" content="Built-in fallback template for auto-generated decks." />
+    <meta name="template-author" content="Slide Maker" />
+    <title>Slide Maker Deck</title>
+    <style>
+      :root {
+        --bg: #0a1a33;
+        --bg2: #122a4a;
+        --panel: rgba(13, 29, 54, 0.9);
+        --text: #eef5ff;
+        --sub: #b9ccee;
+        --accent: #36d8b2;
+        --accent2: #7fb2ff;
+        --line: rgba(173, 201, 247, 0.25);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        font-family: "Segoe UI", "Noto Sans KR", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(900px 380px at 5% -5%, rgba(54, 216, 178, 0.25), transparent 65%),
+          radial-gradient(900px 420px at 100% 0%, rgba(126, 178, 255, 0.25), transparent 62%),
+          linear-gradient(130deg, var(--bg), var(--bg2));
+      }
+
+      body {
+        display: grid;
+        grid-template-rows: 1fr auto;
+        overflow: hidden;
+      }
+
+      .deck-shell {
+        width: 100%;
+        height: 100%;
+        display: grid;
+        place-items: center;
+        padding: 2.5vh 2.5vw;
+      }
+
+      .slide-container {
+        width: min(1280px, 95vw);
+        height: min(720px, 88vh);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--panel);
+        box-shadow: 0 22px 55px rgba(2, 10, 23, 0.45);
+        overflow: hidden;
+        position: relative;
+      }
+
+      .slide {
+        width: 100%;
+        height: 100%;
+        padding: 4.6vh 4vw;
+        display: none;
+        flex-direction: column;
+        gap: 2.2vh;
+      }
+
+      .slide.active {
+        display: flex;
+      }
+
+      .title-slide {
+        justify-content: center;
+        background:
+          radial-gradient(600px 340px at 100% 0%, rgba(54, 216, 178, 0.14), transparent 70%),
+          radial-gradient(700px 300px at 0% 100%, rgba(126, 178, 255, 0.14), transparent 70%);
+      }
+
+      .day-label {
+        display: inline-block;
+        width: fit-content;
+        padding: 0.35rem 0.7rem;
+        border-radius: 999px;
+        background: rgba(54, 216, 178, 0.15);
+        color: #bcffe8;
+        font-size: 0.82rem;
+        letter-spacing: 0.06em;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(2rem, 4.2vw, 4.1rem);
+        line-height: 1.1;
+      }
+
+      .subtitle {
+        color: var(--sub);
+        font-size: clamp(1rem, 1.8vw, 1.5rem);
+      }
+
+      .meta-info {
+        margin-top: 1vh;
+        display: flex;
+        gap: 0.65rem;
+        color: var(--sub);
+        font-size: 0.95rem;
+      }
+
+      .slide-header {
+        font-size: clamp(1.35rem, 2.8vw, 2.5rem);
+        font-weight: 700;
+      }
+
+      .concept-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1rem;
+        align-content: start;
+      }
+
+      .concept-card {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(8, 20, 40, 0.68);
+        padding: 0.9rem 1rem;
+      }
+
+      .concept-card h3 {
+        margin: 0 0 0.45rem;
+      }
+
+      .concept-card p {
+        margin: 0;
+        color: var(--sub);
+        line-height: 1.5;
+      }
+
+      .comparison {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+      }
+
+      .col {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 0.9rem 1rem;
+        background: rgba(8, 20, 40, 0.68);
+      }
+
+      .col h3 {
+        margin: 0 0 0.55rem;
+      }
+
+      .col ul {
+        margin: 0;
+        padding-left: 1.1rem;
+      }
+
+      .col li {
+        margin-bottom: 0.25rem;
+        color: var(--sub);
+      }
+
+      .timeline {
+        display: grid;
+        gap: 0.75rem;
+      }
+
+      .timeline-item {
+        border-left: 3px solid var(--accent);
+        padding: 0.2rem 0 0.2rem 0.75rem;
+      }
+
+      .timeline-item h3 {
+        margin: 0;
+      }
+
+      .timeline-item p {
+        margin: 0.3rem 0 0;
+        color: var(--sub);
+      }
+
+      .big-quote {
+        height: 100%;
+        display: grid;
+        place-items: center;
+        padding: 2rem;
+      }
+
+      .quote-body {
+        max-width: 78%;
+        font-size: clamp(1.3rem, 2.7vw, 2.5rem);
+        line-height: 1.45;
+        color: #e6f3ff;
+        text-align: center;
+      }
+
+      .source {
+        display: block;
+        margin-top: 0.8rem;
+        color: var(--sub);
+        font-size: 0.9em;
+      }
+
+      .styled-table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      .styled-table th,
+      .styled-table td {
+        border: 1px solid var(--line);
+        padding: 0.6rem 0.65rem;
+        text-align: left;
+      }
+
+      .styled-table th {
+        color: #d7f9f2;
+        background: rgba(54, 216, 178, 0.09);
+      }
+
+      .summary-list {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 0.7rem;
+      }
+
+      .summary-list li {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .summary-list .num {
+        min-width: 2.2rem;
+        display: inline-grid;
+        place-items: center;
+        padding: 0.25rem 0.35rem;
+        border-radius: 999px;
+        background: rgba(127, 178, 255, 0.2);
+        color: #d7e8ff;
+        font-size: 0.85rem;
+      }
+
+      .footer {
+        height: 44px;
+        border-top: 1px solid var(--line);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 1rem;
+        background: rgba(8, 20, 40, 0.78);
+        color: var(--sub);
+      }
+
+      .footer-center-text {
+        font-size: 0.86rem;
+      }
+
+      .footer-page {
+        font-size: 0.86rem;
+      }
+
+      @media (max-width: 1024px) {
+        .concept-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="deck-shell">
+      <div class="slide-container" id="slides">
+        <div class="slide title-slide active">
+          <div class="day-label">TEMPLATE</div>
+          <h1 id="titleH1">Slide Maker</h1>
+          <div class="subtitle">Fallback Template</div>
+          <div class="meta-info">
+            <span>Slide Maker</span>
+            <span>|</span>
+            <span>2026-01-01</span>
+          </div>
+        </div>
+      </div>
+      <script>
+        const titles = [
+          'Slide Maker'
+        ]
+        const types = [
+          'title'
+        ]
+
+        const slides = Array.from(document.querySelectorAll('.slide'))
+        const pageEl = document.querySelector('.footer-page')
+        let current = Math.max(0, slides.findIndex((slide) => slide.classList.contains('active')))
+        if (current < 0) current = 0
+
+        const update = () => {
+          slides.forEach((slide, index) => {
+            slide.classList.toggle('active', index === current)
+          })
+          if (pageEl) pageEl.textContent = `${current + 1} / ${slides.length}`
+        }
+
+        const move = (delta) => {
+          const next = current + delta
+          if (next < 0 || next >= slides.length) return
+          current = next
+          update()
+        }
+
+        window.addEventListener('keydown', (event) => {
+          if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') move(1)
+          if (event.key === 'ArrowLeft' || event.key === 'PageUp') move(-1)
+        })
+
+        update()
+      </script>
+    </div>
+    <footer class="footer">
+      <span class="footer-center-text">Slide Maker Deck</span>
+      <div class="footer-page">1 / 1</div>
+    </footer>
+  </body>
+</html>

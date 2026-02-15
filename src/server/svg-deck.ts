@@ -66,23 +66,39 @@ const toStringArray = (value: unknown, fallback: string[] = []) => {
   return values.length > 0 ? values : fallback
 }
 
-const resolveSvgSlideMakerRoot = () => {
-  const candidates = [
-    process.env.SVG_SLIDE_MAKER_ROOT,
+const hasHtmlTemplates = (directory: string) => {
+  if (!existsSync(directory)) return false
+  try {
+    return readdirSync(directory).some((file) => file.endsWith('.html'))
+  } catch {
+    return false
+  }
+}
+
+const resolveTemplatesDir = () => {
+  const configuredRoot = process.env.SVG_SLIDE_MAKER_ROOT?.trim()
+  const rootCandidates = [
+    configuredRoot || undefined,
     path.resolve(process.cwd(), '../svg-slide-maker'),
     path.resolve(process.cwd(), 'svg-slide-maker'),
   ].filter(Boolean) as string[]
 
-  for (const candidate of candidates) {
-    if (existsSync(path.join(candidate, 'templates')) && existsSync(path.join(candidate, 'slide-tool.mjs'))) {
-      return candidate
-    }
+  const directoryCandidates: string[] = []
+  for (const root of rootCandidates) {
+    directoryCandidates.push(path.join(root, 'templates'))
+    directoryCandidates.push(root)
   }
 
-  throw new Error('svg-slide-maker root를 찾을 수 없습니다. SVG_SLIDE_MAKER_ROOT를 설정하세요.')
+  directoryCandidates.push(path.resolve(process.cwd(), 'templates'))
+
+  for (const candidate of directoryCandidates) {
+    if (hasHtmlTemplates(candidate)) return candidate
+  }
+
+  throw new Error('템플릿 디렉토리를 찾을 수 없습니다. SVG_SLIDE_MAKER_ROOT 또는 /templates를 확인하세요.')
 }
 
-const templatesDir = () => path.join(resolveSvgSlideMakerRoot(), 'templates')
+const templatesDir = () => resolveTemplatesDir()
 
 const findMatchingDivClose = (html: string, openTagEnd: number) => {
   let depth = 1

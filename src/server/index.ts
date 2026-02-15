@@ -89,6 +89,16 @@ const sanitizeText = (value: string, maxLength = MAX_SOURCE_CHARS) => (
     .slice(0, maxLength)
 )
 
+const normalizeInputUrl = (value: string) => {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  if (/^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(trimmed)) return trimmed
+  const hasExplicitPort = /:[0-9]+(?:\/|$)/.test(trimmed)
+  const isIpv4Like = /^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:\/|$)/.test(trimmed)
+  if (hasExplicitPort || isIpv4Like) return `http://${trimmed}`
+  return `https://${trimmed}`
+}
+
 const authMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
   const token = req.headers.authorization?.replace('Bearer ', '')
   if (!token) return res.status(401).json({ error: '인증 필요' })
@@ -172,13 +182,26 @@ const assertSafePublicUrl = async (rawUrl: string) => {
 
 const fetchUrlContent = async (rawUrl: string) => {
   const safeUrl = await assertSafePublicUrl(rawUrl)
-  const response = await fetch(safeUrl.toString(), {
-    signal: AbortSignal.timeout(12_000),
-    redirect: 'follow'
-  })
+  let response: Response
+  try {
+    response = await fetch(safeUrl.toString(), {
+      signal: AbortSignal.timeout(12_000),
+      redirect: 'follow',
+      headers: {
+        'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36',
+        accept: 'text/html,application/xhtml+xml',
+        'accept-language': 'ko,en-US;q=0.9,en;q=0.8'
+      }
+    })
+  } catch (error) {
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      throw new RequestValidationError('웹페이지 요청 시간이 초과되었습니다')
+    }
+    throw new RequestValidationError('웹페이지 연결에 실패했습니다')
+  }
 
   if (!response.ok) {
-    throw new RequestValidationError('웹페이지를 가져오지 못했습니다')
+    throw new RequestValidationError(`웹페이지를 가져오지 못했습니다 (HTTP ${response.status})`)
   }
 
   const contentType = (response.headers.get('content-type') || '').toLowerCase()
@@ -574,7 +597,7 @@ const handleGenerate = async (
 
 app.post('/api/generate/from-url', authMiddleware, async (req, res) => {
   await handleGenerate(req, res, 'url', async () => {
-    const url = typeof req.body?.url === 'string' ? req.body.url.trim() : ''
+    const url = typeof req.body?.url === 'string' ? normalizeInputUrl(req.body.url) : ''
     if (!url) throw new RequestValidationError('URL을 입력하세요')
     const sourceText = await fetchUrlContent(url)
     return { sourceText, sourceLabel: url, projectNameHint: url }
