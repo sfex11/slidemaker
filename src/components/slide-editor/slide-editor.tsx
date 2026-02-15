@@ -32,6 +32,8 @@ interface SlideEditorProps {
   slides: Slide[]
   onSlideUpdate: (slideId: string, content: Record<string, unknown>) => void | Promise<void>
   onSlidesReorder?: (orderedSlideIds: string[]) => void | Promise<void>
+  onExport?: () => void | Promise<void>
+  isExporting?: boolean
 }
 
 export function SlideEditor({
@@ -40,6 +42,8 @@ export function SlideEditor({
   slides,
   onSlideUpdate,
   onSlidesReorder,
+  onExport,
+  isExporting = false,
 }: SlideEditorProps) {
   const [localSlides, setLocalSlides] = React.useState<Slide[]>(slides)
   const [selectedSlideId, setSelectedSlideId] = React.useState<string | null>(slides[0]?.id ?? null)
@@ -115,7 +119,7 @@ export function SlideEditor({
       </div>
 
       <div className="flex-1 flex flex-col bg-slate-100">
-        <Toolbar projectName={projectName} />
+        <Toolbar projectName={projectName} onExport={() => { void onExport?.() }} isExporting={isExporting} />
         <div className="flex-1 flex items-center justify-center p-8 overflow-auto">
           <Canvas slide={selectedSlide} />
         </div>

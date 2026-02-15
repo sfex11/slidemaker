@@ -38172,7 +38172,7 @@ var bcryptjs_default = {
 
 // src/server/index.ts
 var import_client4 = __toESM(require_default2(), 1);
-import path2 from "path";
+import path3 from "path";
 import crypto2 from "crypto";
 import dns from "dns/promises";
 import net from "net";
@@ -57520,6 +57520,351 @@ var STRINGS = {
 // node_modules/cheerio/dist/esm/index.js
 var import_whatwg_mimetype = __toESM(require_mime_type(), 1);
 
+// src/server/svg-deck.ts
+import { existsSync, readdirSync, readFileSync } from "fs";
+import path2 from "path";
+var metaContent = (html3, metaName, fallback = "") => {
+  const escapedName = metaName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = html3.match(new RegExp(`<meta\\s+name="${escapedName}"\\s+content="([^"]*)"`, "i"));
+  return match ? match[1] : fallback;
+};
+var slugify = (value) => value.toLowerCase().trim().replace(/\.html$/i, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "template";
+var escapeHtml = (value) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+var escapeJsString = (value) => value.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\r/g, "").replace(/\n/g, " ");
+var toText = (value, fallback = "") => typeof value === "string" ? value : fallback;
+var toStringArray = (value, fallback = []) => {
+  if (!Array.isArray(value))
+    return fallback;
+  const values2 = value.map((item) => toText(item).trim()).filter(Boolean);
+  return values2.length > 0 ? values2 : fallback;
+};
+var resolveSvgSlideMakerRoot = () => {
+  const candidates = [
+    process.env.SVG_SLIDE_MAKER_ROOT,
+    path2.resolve(process.cwd(), "../svg-slide-maker"),
+    path2.resolve(process.cwd(), "svg-slide-maker")
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (existsSync(path2.join(candidate, "templates")) && existsSync(path2.join(candidate, "slide-tool.mjs"))) {
+      return candidate;
+    }
+  }
+  throw new Error("svg-slide-maker root\uB97C \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. SVG_SLIDE_MAKER_ROOT\uB97C \uC124\uC815\uD558\uC138\uC694.");
+};
+var templatesDir = () => path2.join(resolveSvgSlideMakerRoot(), "templates");
+var findMatchingDivClose = (html3, openTagEnd) => {
+  let depth = 1;
+  let cursor = openTagEnd;
+  while (cursor < html3.length && depth > 0) {
+    const nextOpen = html3.indexOf("<div", cursor);
+    const nextClose = html3.indexOf("</div>", cursor);
+    if (nextClose === -1)
+      break;
+    if (nextOpen !== -1 && nextOpen < nextClose) {
+      depth += 1;
+      cursor = nextOpen + 4;
+      continue;
+    }
+    depth -= 1;
+    if (depth === 0)
+      return nextClose;
+    cursor = nextClose + 6;
+  }
+  throw new Error("\uD15C\uD50C\uB9BF\uC758 slide-container \uC885\uB8CC \uD0DC\uADF8\uB97C \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.");
+};
+var replaceSlideContainer = (html3, slidesHtml) => {
+  const containerRegexes = [
+    /(<div\b[^>]*class="slide-container"[^>]*id="slides"[^>]*>)([\s\S]*?)(<\/div>\s*<script>)/i,
+    /(<div\b[^>]*id="slides"[^>]*class="slide-container"[^>]*>)([\s\S]*?)(<\/div>\s*<script>)/i
+  ];
+  for (const regex of containerRegexes) {
+    if (regex.test(html3)) {
+      return html3.replace(regex, (_match, head2, _inner, tail2) => `${head2}
+
+${slidesHtml}
+
+${tail2}`);
+    }
+  }
+  const openMatch = /<div\b[^>]*class="slide-container"[^>]*>/i.exec(html3);
+  if (!openMatch || typeof openMatch.index !== "number") {
+    throw new Error("\uD15C\uD50C\uB9BF\uC5D0\uC11C slide-container\uB97C \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.");
+  }
+  const containerStart = openMatch.index;
+  const openTagEnd = containerStart + openMatch[0].length;
+  const closeStart = findMatchingDivClose(html3, openTagEnd);
+  const head = html3.slice(0, openTagEnd);
+  const tail = html3.slice(closeStart);
+  return `${head}
+
+${slidesHtml}
+
+${tail}`;
+};
+var normalizeSlideType = (type) => {
+  if (type === "card-grid")
+    return "cards";
+  return type;
+};
+var slideTitle = (slide, index2) => {
+  const contentTitle = toText(slide.content.title).trim();
+  if (contentTitle)
+    return contentTitle;
+  switch (slide.type) {
+    case "title":
+      return index2 === 0 ? "\uC81C\uBAA9 \uC2AC\uB77C\uC774\uB4DC" : "\uB9C8\uBB34\uB9AC";
+    case "card-grid":
+      return "\uD575\uC2EC \uD56D\uBAA9";
+    case "comparison":
+      return "\uBE44\uAD50";
+    case "timeline":
+      return "\uD0C0\uC784\uB77C\uC778";
+    case "quote":
+      return "\uD575\uC2EC \uC778\uC6A9";
+    case "table":
+      return "\uB370\uC774\uD130";
+    default:
+      return "\uC2AC\uB77C\uC774\uB4DC";
+  }
+};
+var renderTitleSlide = (slide, index2, projectName) => {
+  const title = escapeHtml(toText(slide.content.title, index2 === 0 ? projectName : "\uAC10\uC0AC\uD569\uB2C8\uB2E4"));
+  const subtitle = escapeHtml(toText(slide.content.subtitle, index2 === 0 ? "SVG Slide Maker Web Service" : "Slide Maker"));
+  const author = escapeHtml(toText(slide.content.author, "Slide Maker"));
+  const label = escapeHtml(toText(slide.content.dayLabel, index2 === 0 ? "GENERATED DECK" : "WRAP UP"));
+  const today = new Date().toISOString().slice(0, 10);
+  const headingId = index2 === 0 ? "titleH1" : undefined;
+  return `
+<div class="slide title-slide${index2 === 0 ? " active" : ""}">
+  <div class="day-label">${label}</div>
+  <h1${headingId ? ` id="${headingId}"` : ""}>${title}</h1>
+  <div class="subtitle">${subtitle}</div>
+  <div class="meta-info">
+    <span>${author}</span>
+    <span>|</span>
+    <span>${today}</span>
+  </div>
+</div>`.trim();
+};
+var renderCardGridSlide = (slide, index2) => {
+  const header = escapeHtml(slideTitle(slide, index2));
+  const items = Array.isArray(slide.content.items) ? slide.content.items : [];
+  const renderedCards = items.slice(0, 6).map((item, itemIndex) => {
+    if (typeof item === "string") {
+      return `
+      <div class="concept-card">
+        <h3 style="color:var(--accent)">\uD56D\uBAA9 ${itemIndex + 1}</h3>
+        <p>${escapeHtml(item)}</p>
+      </div>`.trim();
+    }
+    if (item && typeof item === "object") {
+      const titled = item;
+      return `
+      <div class="concept-card">
+        <h3 style="color:var(--accent)">${escapeHtml(toText(titled.title, `\uD56D\uBAA9 ${itemIndex + 1}`))}</h3>
+        <p>${escapeHtml(toText(titled.description))}</p>
+      </div>`.trim();
+    }
+    return "";
+  }).filter(Boolean).join(`
+`);
+  return `
+<div class="slide content-slide${index2 === 0 ? " active" : ""}">
+  <div class="slide-header">${header}</div>
+  <div class="concept-grid">
+    ${renderedCards}
+  </div>
+</div>`.trim();
+};
+var renderComparisonSlide = (slide, index2) => {
+  const header = escapeHtml(slideTitle(slide, index2));
+  const leftTitle = escapeHtml(toText(slide.content.leftTitle, "\uC635\uC158 A"));
+  const rightTitle = escapeHtml(toText(slide.content.rightTitle, "\uC635\uC158 B"));
+  const leftItems = toStringArray(slide.content.leftItems, ["\uAC15\uC810"]);
+  const rightItems = toStringArray(slide.content.rightItems, ["\uAC15\uC810"]);
+  const leftList = leftItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const rightList = rightItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  return `
+<div class="slide content-slide${index2 === 0 ? " active" : ""}">
+  <div class="slide-header">${header}</div>
+  <div class="comparison">
+    <div class="col">
+      <h3 style="color:var(--accent)">${leftTitle}</h3>
+      <ul>${leftList}</ul>
+    </div>
+    <div class="col">
+      <h3 style="color:var(--accent2)">${rightTitle}</h3>
+      <ul>${rightList}</ul>
+    </div>
+  </div>
+</div>`.trim();
+};
+var renderTimelineSlide = (slide, index2) => {
+  const header = escapeHtml(slideTitle(slide, index2));
+  const items = Array.isArray(slide.content.items) ? slide.content.items.slice(0, 6).map((item, itemIndex) => {
+    const typed = item;
+    return `
+      <div class="timeline-item">
+        <h3>${escapeHtml(toText(typed.title, `\uB2E8\uACC4 ${itemIndex + 1}`))}</h3>
+        <p>${escapeHtml(toText(typed.description, "\uC124\uBA85\uC744 \uC785\uB825\uD558\uC138\uC694"))}</p>
+      </div>`.trim();
+  }).join(`
+`) : `
+      <div class="timeline-item">
+        <h3>\uB2E8\uACC4 1</h3>
+        <p>\uC124\uBA85\uC744 \uC785\uB825\uD558\uC138\uC694</p>
+      </div>`.trim();
+  return `
+<div class="slide content-slide${index2 === 0 ? " active" : ""}">
+  <div class="slide-header">${header}</div>
+  <div class="timeline">
+    ${items}
+  </div>
+</div>`.trim();
+};
+var renderQuoteSlide = (slide, index2) => {
+  const quote = escapeHtml(toText(slide.content.quote, "\uD575\uC2EC \uBA54\uC2DC\uC9C0\uB97C \uC785\uB825\uD558\uC138\uC694."));
+  const source = escapeHtml(toText(slide.content.author, ""));
+  return `
+<div class="slide${index2 === 0 ? " active" : ""}">
+  <div class="big-quote">
+    <div class="quote-body">
+      ${quote}
+      ${source ? `<span class="source">\u2014 ${source}</span>` : ""}
+    </div>
+  </div>
+</div>`.trim();
+};
+var renderTableSlide = (slide, index2) => {
+  const header = escapeHtml(slideTitle(slide, index2));
+  const headers = toStringArray(slide.content.headers, ["\uD56D\uBAA9", "\uAC12"]);
+  const rows = Array.isArray(slide.content.rows) ? slide.content.rows.map((row) => {
+    if (!Array.isArray(row))
+      return [];
+    return row.map((cell) => escapeHtml(toText(cell)));
+  }) : [];
+  const headHtml = headers.map((head) => `<th>${escapeHtml(head)}</th>`).join("");
+  const rowsHtml = rows.length > 0 ? rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("") : `<tr><td>${escapeHtml("\uB370\uC774\uD130")}</td><td>${escapeHtml("-")}</td></tr>`;
+  return `
+<div class="slide content-slide${index2 === 0 ? " active" : ""}">
+  <div class="slide-header">${header}</div>
+  <table class="styled-table">
+    <thead>
+      <tr>${headHtml}</tr>
+    </thead>
+    <tbody>${rowsHtml}</tbody>
+  </table>
+</div>`.trim();
+};
+var renderSummarySlide = (slide, index2) => {
+  const header = escapeHtml(slideTitle(slide, index2));
+  const fallbackItems = toStringArray(slide.content.items, []);
+  const summaryItems = fallbackItems.length > 0 ? fallbackItems : [toText(slide.content.summary, "\uD575\uC2EC \uC694\uC57D\uC744 \uC785\uB825\uD558\uC138\uC694")];
+  const listHtml = summaryItems.map((item, itemIndex) => `<li><span class="num">${String(itemIndex + 1).padStart(2, "0")}</span><span>${escapeHtml(item)}</span></li>`).join("");
+  return `
+<div class="slide content-slide${index2 === 0 ? " active" : ""}">
+  <div class="slide-header">${header}</div>
+  <ul class="summary-list">${listHtml}</ul>
+</div>`.trim();
+};
+var renderSlide = (slide, index2, projectName) => {
+  switch (slide.type) {
+    case "title":
+      return renderTitleSlide(slide, index2, projectName);
+    case "card-grid":
+      return renderCardGridSlide(slide, index2);
+    case "comparison":
+      return renderComparisonSlide(slide, index2);
+    case "timeline":
+      return renderTimelineSlide(slide, index2);
+    case "quote":
+      return renderQuoteSlide(slide, index2);
+    case "table":
+      return renderTableSlide(slide, index2);
+    default:
+      return renderSummarySlide(slide, index2);
+  }
+};
+var listSvgTemplates = () => {
+  const dir = templatesDir();
+  const files = readdirSync(dir).filter((file) => file.endsWith(".html")).sort();
+  return files.map((fileName) => {
+    const fullPath = path2.join(dir, fileName);
+    const html3 = readFileSync(fullPath, "utf-8");
+    const name = metaContent(html3, "template-name", fileName.replace(/\.html$/i, ""));
+    const description = metaContent(html3, "template-description", "");
+    const author = metaContent(html3, "template-author", "");
+    return {
+      id: slugify(fileName),
+      fileName,
+      name,
+      description,
+      author,
+      path: fullPath
+    };
+  });
+};
+var selectTemplate = (templates, templateId) => {
+  if (!templateId) {
+    return templates.find((template) => template.fileName === "default.html") || templates[0];
+  }
+  const normalized = slugify(templateId);
+  return templates.find((template) => template.id === normalized || template.fileName === templateId || slugify(template.name) === normalized);
+};
+var replaceOverviewArrays = (html3, slides) => {
+  const titles = slides.map((slide, index2) => slideTitle(slide, index2));
+  const types2 = slides.map((slide) => normalizeSlideType(slide.type));
+  const titleSnippet = `const titles = [
+    ${titles.map((title) => `'${escapeJsString(title)}'`).join(`,
+    `)}
+  ]`;
+  const typeSnippet = `const types = [
+    ${types2.map((type) => `'${escapeJsString(type)}'`).join(`,
+    `)}
+  ]`;
+  let updated = html3;
+  updated = updated.replace(/const titles = \[[\s\S]*?\]/, titleSnippet);
+  updated = updated.replace(/const types = \[[\s\S]*?\]/, typeSnippet);
+  return updated;
+};
+var renderProjectDeckHtml = ({
+  projectName,
+  slides,
+  templateId,
+  footerText
+}) => {
+  const templates = listSvgTemplates();
+  if (templates.length === 0) {
+    throw new Error("\uC0AC\uC6A9 \uAC00\uB2A5\uD55C \uD15C\uD50C\uB9BF\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.");
+  }
+  const template = selectTemplate(templates, templateId);
+  if (!template) {
+    throw new Error(`\uD15C\uD50C\uB9BF\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${templateId}`);
+  }
+  const sourceHtml = readFileSync(template.path, "utf-8");
+  const safeSlides = slides.length > 0 ? slides : [{ type: "title", content: { title: projectName, subtitle: "\uBE48 \uD504\uB85C\uC81D\uD2B8" } }];
+  const renderedSlides = safeSlides.map((slide, index2) => renderSlide(slide, index2, projectName)).join(`
+
+`);
+  const today = new Date().toISOString().slice(0, 10);
+  const footer = escapeHtml(footerText || `Slide Maker \xB7 ${projectName} \xB7 ${today}`);
+  let html3 = replaceSlideContainer(sourceHtml, renderedSlides);
+  html3 = html3.replace(/<title[^>]*>[\s\S]*?<\/title>/i, `<title>${escapeHtml(projectName)}</title>`);
+  html3 = html3.replace(/(<span class="footer-center-text">)([\s\S]*?)(<\/span>)/i, `$1${footer}$3`);
+  html3 = html3.replace(/(<div class="footer-page"[^>]*>)([\s\S]*?)(<\/div>)/i, `$1 1 / ${safeSlides.length}$3`);
+  html3 = replaceOverviewArrays(html3, safeSlides);
+  return {
+    html: html3,
+    template: {
+      id: template.id,
+      fileName: template.fileName,
+      name: template.name,
+      description: template.description,
+      author: template.author
+    }
+  };
+};
+
 // src/server/index.ts
 var __dirname = "/Users/chulhyunhwang/Documents/claude/slide_saas/saas/src/server";
 var app = import_express.default();
@@ -57532,7 +57877,7 @@ var glmClient = new OpenAI({
   baseURL: "https://api.z.ai/api/coding/paas/v4"
 });
 var isProduction = false;
-var clientPath = isProduction ? path2.join(process.cwd(), "dist/client") : path2.join(__dirname, "../../dist/client");
+var clientPath = isProduction ? path3.join(process.cwd(), "dist/client") : path3.join(__dirname, "../../dist/client");
 app.use(import_cors.default({
   origin: (origin, callback) => {
     if (!origin || allowedOrigins.includes(origin)) {
@@ -57689,6 +58034,21 @@ app.get("/api/auth/me", authMiddleware, async (req, res) => {
   });
   res.json({ user: { id: user?.id, email: user?.email, name: user?.name } });
 });
+app.get("/api/svg/templates", authMiddleware, (_req, res) => {
+  try {
+    const templates = listSvgTemplates().map((template) => ({
+      id: template.id,
+      fileName: template.fileName,
+      name: template.name,
+      description: template.description,
+      author: template.author
+    }));
+    res.json({ templates });
+  } catch (error2) {
+    console.error("\uD15C\uD50C\uB9BF \uBAA9\uB85D \uC870\uD68C \uC624\uB958:", error2);
+    res.status(500).json({ error: "\uD15C\uD50C\uB9BF \uBAA9\uB85D \uC870\uD68C \uC2E4\uD328" });
+  }
+});
 app.get("/api/projects", authMiddleware, async (req, res) => {
   const projects = await prisma.project.findMany({
     where: { userId: getUserId(req) },
@@ -57764,6 +58124,36 @@ app.delete("/api/projects/:id", authMiddleware, async (req, res) => {
     where: { id: req.params.id }
   });
   res.json({ ok: true });
+});
+app.post("/api/projects/:id/export/html", authMiddleware, async (req, res) => {
+  const userId = getUserId(req);
+  const templateId = typeof req.body?.templateId === "string" ? req.body.templateId : undefined;
+  const project = await prisma.project.findFirst({
+    where: { id: req.params.id, userId },
+    include: { slides: { orderBy: { order: "asc" } } }
+  });
+  if (!project)
+    return res.status(404).json({ error: "\uD504\uB85C\uC81D\uD2B8 \uC5C6\uC74C" });
+  try {
+    const rendered = renderProjectDeckHtml({
+      projectName: project.name,
+      slides: project.slides.map((slide) => ({
+        type: slide.type,
+        content: parseSlideContent(slide.content)
+      })),
+      templateId,
+      footerText: `${project.name} \xB7 Slide Maker \xB7 ${new Date().toISOString().slice(0, 10)}`
+    });
+    const safeName = project.name.replace(/[^\w\-]+/g, "_").replace(/^_+|_+$/g, "") || "deck";
+    res.json({
+      fileName: `${safeName}.html`,
+      template: rendered.template,
+      html: rendered.html
+    });
+  } catch (error2) {
+    console.error("HTML \uB0B4\uBCF4\uB0B4\uAE30 \uC624\uB958:", error2);
+    res.status(500).json({ error: "HTML \uB0B4\uBCF4\uB0B4\uAE30 \uC2E4\uD328" });
+  }
 });
 app.post("/api/projects/:projectId/slides", authMiddleware, async (req, res) => {
   const { type, content } = req.body;
@@ -58021,7 +58411,7 @@ app.post("/api/generate/from-text", authMiddleware, async (req, res) => {
   }
 });
 app.get("*", (_req, res) => {
-  res.sendFile(path2.join(clientPath, "index.html"));
+  res.sendFile(path3.join(clientPath, "index.html"));
 });
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`\uD83D\uDE80 \uC11C\uBC84 \uC2E4\uD589 \uC911: http://0.0.0.0:${PORT}`);

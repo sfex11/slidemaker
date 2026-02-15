@@ -8,6 +8,7 @@ AI 기반 프레젠테이션 생성/편집 SaaS입니다.
 - Server: Express (Bun runtime)
 - DB: Prisma + SQLite
 - AI: GLM-5(OpenAI SDK 호환 엔드포인트)
+- SVG Deck Engine: `svg-slide-maker` templates + `slide-tool.mjs` 구조 호환
 
 ## Requirements
 
@@ -22,9 +23,11 @@ AI 기반 프레젠테이션 생성/편집 SaaS입니다.
 DATABASE_URL="file:./dev.db"
 ZAI_API_KEY=""
 CORS_ORIGIN="http://localhost:3000,http://127.0.0.1:3000"
+SVG_SLIDE_MAKER_ROOT="../svg-slide-maker"
 ```
 
 - `ZAI_API_KEY`가 없으면 AI 생성은 기본 샘플 슬라이드로 폴백됩니다.
+- `SVG_SLIDE_MAKER_ROOT`는 템플릿(`templates/*.html`)을 읽을 루트 경로입니다.
 
 ## Install
 
@@ -61,6 +64,14 @@ bun run db:push
 bun run test        # unit
 bun run test:e2e    # playwright
 ```
+
+## SVG Slide Maker API
+
+- `GET /api/svg/templates`
+  - 사용 가능한 템플릿 목록 조회
+- `POST /api/projects/:id/export/html`
+  - 프로젝트 슬라이드를 템플릿 기반 HTML deck으로 내보내기
+  - body 예시: `{ "templateId": "default" }`
 
 ## Project Structure
 

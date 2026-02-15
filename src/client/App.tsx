@@ -31,6 +31,14 @@ interface Project {
   updatedAt: string
 }
 
+interface SvgTemplate {
+  id: string
+  fileName: string
+  name: string
+  description: string
+  author: string
+}
+
 // 로그인 페이지
 function LoginPage() {
   const [email, setEmail] = useState('')
@@ -452,12 +460,15 @@ function ProjectPage() {
   const { id } = useParams<{ id: string }>()
   const [project, setProject] = useState<Project | null>(null)
   const [slides, setSlides] = useState<Slide[]>([])
+  const [templates, setTemplates] = useState<SvgTemplate[]>([])
+  const [isExporting, setIsExporting] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const navigate = useNavigate()
 
   useEffect(() => {
     if (id) {
       fetchProject()
+      fetchTemplates()
     }
   }, [id])
 
@@ -482,6 +493,20 @@ function ProjectPage() {
     }
   }
 
+  const fetchTemplates = async () => {
+    const token = localStorage.getItem('token')
+    try {
+      const res = await fetch('/api/svg/templates', {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      if (!res.ok) return
+      const data = await res.json()
+      setTemplates(data.templates || [])
+    } catch (err) {
+      console.error('템플릿 로드 실패:', err)
+    }
+  }
+
   const updateSlide = async (slideId: string, content: Record<string, unknown>) => {
     const token = localStorage.getItem('token')
     try {
@@ -496,6 +521,53 @@ function ProjectPage() {
       setSlides(slides.map(s => s.id === slideId ? { ...s, content } : s))
     } catch (err) {
       console.error('슬라이드 업데이트 실패:', err)
+    }
+  }
+
+  const exportProject = async () => {
+    if (!id) return
+
+    const token = localStorage.getItem('token')
+    const defaultTemplate = templates[0]?.id || 'default'
+    const hint = templates.map((template) => template.id).join(', ')
+    const selectedTemplate = window.prompt(
+      hint ? `템플릿 ID를 선택하세요 (${hint})` : '템플릿 ID를 입력하세요',
+      defaultTemplate
+    )
+    if (selectedTemplate === null) return
+
+    setIsExporting(true)
+    try {
+      const res = await fetch(`/api/projects/${id}/export/html`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ templateId: selectedTemplate.trim() || defaultTemplate })
+      })
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}))
+        throw new Error(errorData.error || 'HTML 내보내기 실패')
+      }
+
+      const data = await res.json()
+      const blob = new Blob([data.html], { type: 'text/html;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = data.fileName || `${project?.name || 'deck'}.html`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('내보내기 실패:', err)
+      const message = err instanceof Error ? err.message : '내보내기 실패'
+      window.alert(message)
+    } finally {
+      setIsExporting(false)
     }
   }
 
@@ -522,6 +594,8 @@ function ProjectPage() {
         projectName={project.name}
         slides={slides}
         onSlideUpdate={updateSlide}
+        onExport={exportProject}
+        isExporting={isExporting}
       />
     </div>
   )

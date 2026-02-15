@@ -8,6 +8,7 @@ import dns from 'dns/promises'
 import net from 'net'
 import OpenAI from 'openai'
 import * as cheerio from 'cheerio'
+import { listSvgTemplates, renderProjectDeckHtml } from './svg-deck'
 
 const app = express()
 const prisma = new PrismaClient()
@@ -212,6 +213,22 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
   res.json({ user: { id: user?.id, email: user?.email, name: user?.name } })
 })
 
+app.get('/api/svg/templates', authMiddleware, (_req, res) => {
+  try {
+    const templates = listSvgTemplates().map((template) => ({
+      id: template.id,
+      fileName: template.fileName,
+      name: template.name,
+      description: template.description,
+      author: template.author,
+    }))
+    res.json({ templates })
+  } catch (error) {
+    console.error('템플릿 목록 조회 오류:', error)
+    res.status(500).json({ error: '템플릿 목록 조회 실패' })
+  }
+})
+
 // 프로젝트 API
 app.get('/api/projects', authMiddleware, async (req, res) => {
   const projects = await prisma.project.findMany({
@@ -293,6 +310,42 @@ app.delete('/api/projects/:id', authMiddleware, async (req, res) => {
     where: { id: req.params.id }
   })
   res.json({ ok: true })
+})
+
+app.post('/api/projects/:id/export/html', authMiddleware, async (req, res) => {
+  const userId = getUserId(req)
+  const templateId = typeof req.body?.templateId === 'string' ? req.body.templateId : undefined
+
+  const project = await prisma.project.findFirst({
+    where: { id: req.params.id, userId },
+    include: { slides: { orderBy: { order: 'asc' } } }
+  })
+  if (!project) return res.status(404).json({ error: '프로젝트 없음' })
+
+  try {
+    const rendered = renderProjectDeckHtml({
+      projectName: project.name,
+      slides: project.slides.map((slide) => ({
+        type: slide.type,
+        content: parseSlideContent(slide.content),
+      })),
+      templateId,
+      footerText: `${project.name} · Slide Maker · ${new Date().toISOString().slice(0, 10)}`,
+    })
+
+    const safeName = project.name
+      .replace(/[^\w\-]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'deck'
+
+    res.json({
+      fileName: `${safeName}.html`,
+      template: rendered.template,
+      html: rendered.html,
+    })
+  } catch (error) {
+    console.error('HTML 내보내기 오류:', error)
+    res.status(500).json({ error: 'HTML 내보내기 실패' })
+  }
 })
 
 // 슬라이드 API
