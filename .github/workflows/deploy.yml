@@ -82,5 +82,20 @@ jobs:
             sudo systemctl restart "${SERVICE_NAME}"
             sudo systemctl --no-pager --full status "${SERVICE_NAME}" | sed -n '1,30p'
 
+            # Nginx가 3001 업스트림을 바라보는 경우 3003으로 자동 동기화
+            if command -v nginx >/dev/null 2>&1; then
+              NGINX_PORT_FILES="/tmp/${SERVICE_NAME}.nginx-port-files.txt"
+              sudo grep -RIlE "(127\\.0\\.0\\.1|localhost):3001" /etc/nginx > "${NGINX_PORT_FILES}" || true
+
+              if [ -s "${NGINX_PORT_FILES}" ]; then
+                while IFS= read -r file; do
+                  sudo sed -i -E "s/(127\\.0\\.0\\.1|localhost):3001/\\1:3003/g" "${file}"
+                done < "${NGINX_PORT_FILES}"
+
+                sudo nginx -t
+                sudo systemctl reload nginx
+              fi
+            fi
+
             # 헬스체크(앱 내부 포트 기준)
             curl -fsS --max-time 10 "http://127.0.0.1:3003/api/health"
