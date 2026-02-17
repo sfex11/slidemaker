@@ -41,6 +41,8 @@ const GENERATION_TIMEOUT_MS = 45_000
 const MAX_SOURCE_CHARS = 40_000
 const MAX_PDF_BYTES = 8 * 1024 * 1024
 const MAX_TEXT_SOURCE_BYTES = 2 * 1024 * 1024
+const MAX_MARKDOWN_BYTES = 2 * 1024 * 1024
+const MIN_SOURCE_TEXT_CHARS = 20
 const URL_FETCH_TIMEOUT_MS = 12_000
 const MAX_URL_FETCH_RETRIES = 2
 const allowedFileRoots = (process.env.ALLOWED_FILE_ROOTS || `${process.cwd()},/tmp`)
@@ -104,6 +106,17 @@ const sanitizeText = (value: string, maxLength = MAX_SOURCE_CHARS) => (
   value
     .replace(/\u0000/g, '')
     .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength)
+)
+
+const sanitizeMarkdownText = (value: string, maxLength = MAX_SOURCE_CHARS) => (
+  value
+    .replace(/\u0000/g, '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\t/g, '  ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim()
     .slice(0, maxLength)
 )
@@ -246,6 +259,16 @@ const detectSourceTypeByFilePath = (filePath: string): SourceType => {
   if (ext === '.md' || ext === '.markdown') return 'markdown'
   return 'url'
 }
+
+const isMarkdownExtension = (filePath: string) => (
+  ['.md', '.markdown', '.mdown', '.mkd', '.txt'].includes(path.extname(filePath).toLowerCase())
+)
+
+const isMarkdownContentType = (contentType: string) => (
+  contentType.includes('text/markdown') ||
+  contentType.includes('text/x-markdown') ||
+  contentType.includes('application/markdown')
+)
 
 const normalizeInputUrl = (value: string) => {
   const trimmed = value.trim()
@@ -428,6 +451,13 @@ const fetchUrlContent = async (rawUrl: string) => {
   await assertSafePublicUrl(response.url)
 
   const contentType = (response.headers.get('content-type') || '').toLowerCase()
+  let responsePath = safeUrl.pathname
+  try {
+    responsePath = new URL(response.url).pathname
+  } catch {
+    // keep fallback path
+  }
+  const markdownLike = isMarkdownContentType(contentType) || isMarkdownExtension(responsePath)
   const responseSize = Number(response.headers.get('content-length') || 0)
   if (responseSize > MAX_TEXT_SOURCE_BYTES && !contentType.includes('application/pdf')) {
     throw new RequestValidationError('문서 크기가 너무 큽니다', 'SOURCE_TOO_LARGE')
@@ -438,9 +468,15 @@ const fetchUrlContent = async (rawUrl: string) => {
     return extractPdfTextFromBuffer(pdfBuffer)
   }
 
-  if (contentType.includes('text/plain') || contentType.includes('text/markdown')) {
-    const text = sanitizeText(await response.text())
-    if (!text || text.length < 20) {
+  if (
+    contentType.includes('text/plain') ||
+    contentType.includes('text/markdown') ||
+    contentType.includes('application/markdown') ||
+    contentType.includes('text/x-markdown')
+  ) {
+    const rawText = await response.text()
+    const text = markdownLike ? sanitizeMarkdownText(rawText) : sanitizeText(rawText)
+    if (!text || text.length < MIN_SOURCE_TEXT_CHARS) {
       throw new RequestValidationError('문서 본문이 너무 짧습니다', 'SOURCE_TEXT_TOO_SHORT')
     }
     return text
@@ -456,7 +492,7 @@ const fetchUrlContent = async (rawUrl: string) => {
   }
 
   const text = extractTextFromHtml(html)
-  if (!text || text.length < 20) {
+  if (!text || text.length < MIN_SOURCE_TEXT_CHARS) {
     throw new RequestValidationError('웹페이지 본문을 추출하지 못했습니다', 'SOURCE_TEXT_TOO_SHORT')
   }
   return text
@@ -473,6 +509,37 @@ const extractPdfContent = async (base64: string) => {
   }
 
   return extractPdfTextFromBuffer(buffer)
+}
+
+const extractMarkdownContent = async (base64: string) => {
+  if (!base64) {
+    throw new RequestValidationError('마크다운 파일이 비어 있습니다', 'MARKDOWN_EMPTY')
+  }
+
+  const normalizedBase64 = base64
+    .trim()
+    .replace(/^data:[^;]+;base64,/i, '')
+    .replace(/\s+/g, '')
+    .replace(/-/g, '+')
+    .replace(/_/g, '/')
+
+  if (!normalizedBase64 || !/^[A-Za-z0-9+/=]+$/.test(normalizedBase64)) {
+    throw new RequestValidationError('마크다운 데이터가 올바르지 않습니다', 'MARKDOWN_INVALID_BASE64')
+  }
+
+  const buffer = Buffer.from(normalizedBase64, 'base64')
+  if (buffer.byteLength === 0) {
+    throw new RequestValidationError('마크다운 데이터가 올바르지 않습니다', 'MARKDOWN_INVALID_BASE64')
+  }
+  if (buffer.byteLength > MAX_MARKDOWN_BYTES) {
+    throw new RequestValidationError('마크다운 파일 크기는 2MB 이하만 지원합니다', 'MARKDOWN_TOO_LARGE')
+  }
+
+  const sourceText = sanitizeMarkdownText(buffer.toString('utf-8'))
+  if (!sourceText || sourceText.length < MIN_SOURCE_TEXT_CHARS) {
+    throw new RequestValidationError('마크다운 본문이 너무 짧습니다', 'SOURCE_TEXT_TOO_SHORT')
+  }
+  return sourceText
 }
 
 interface ResolvedInputSource {
@@ -512,9 +579,9 @@ const readSourceFromFilePath = async (inputPath: string): Promise<ResolvedInputS
 
   const sourceText = (ext === '.html' || ext === '.htm')
     ? extractTextFromHtml(fileText)
-    : sanitizeText(fileText)
+    : (isMarkdownExtension(realPath) ? sanitizeMarkdownText(fileText) : sanitizeText(fileText))
 
-  if (!sourceText || sourceText.length < 20) {
+  if (!sourceText || sourceText.length < MIN_SOURCE_TEXT_CHARS) {
     throw new RequestValidationError('파일 본문이 너무 짧습니다', 'SOURCE_TEXT_TOO_SHORT')
   }
 
@@ -560,13 +627,396 @@ const withGenerationLock = async <T>(userId: string, task: () => Promise<T>) => 
   }
 }
 
+const trimEllipsis = (value: string, maxLength = 120) => (
+  value.length > maxLength ? `${value.slice(0, Math.max(maxLength - 3, 1)).trim()}...` : value
+)
+
+const toTextValue = (value: unknown, fallback = '', maxLength = 180) => {
+  if (typeof value !== 'string') return fallback
+  const cleaned = sanitizeText(value, maxLength)
+  return cleaned || fallback
+}
+
+const toStringList = (value: unknown, maxItems = 6, maxLength = 120): string[] => {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item) => {
+      if (typeof item === 'string') return sanitizeText(item, maxLength)
+      if (!item || typeof item !== 'object') return ''
+      const typed = item as Record<string, unknown>
+      if (typeof typed.title === 'string' && typeof typed.description === 'string') {
+        return sanitizeText(`${typed.title}: ${typed.description}`, maxLength)
+      }
+      if (typeof typed.title === 'string') return sanitizeText(typed.title, maxLength)
+      if (typeof typed.description === 'string') return sanitizeText(typed.description, maxLength)
+      return ''
+    })
+    .filter(Boolean)
+    .slice(0, maxItems)
+}
+
+const toTableRows = (value: unknown, maxRows = 6, maxCols = 6): string[][] => {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((row) => {
+      if (!Array.isArray(row)) return []
+      return row
+        .slice(0, maxCols)
+        .map((cell) => sanitizeText(String(cell ?? ''), 120))
+    })
+    .filter((row) => row.length > 0)
+    .slice(0, maxRows)
+}
+
+const dedupeStrings = (values: string[], maxItems = 6) => {
+  const seen = new Set<string>()
+  const deduped: string[] = []
+  for (const value of values) {
+    const cleaned = value.trim()
+    if (!cleaned) continue
+    const key = cleaned.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    deduped.push(cleaned)
+    if (deduped.length >= maxItems) break
+  }
+  return deduped
+}
+
+const normalizeSlideType = (rawType: unknown): DeckSlide['type'] => {
+  const normalized = typeof rawType === 'string'
+    ? rawType.toLowerCase().trim().replace(/[\s_]+/g, '-')
+    : ''
+
+  if (['title', 'cover', 'intro', 'closing', 'end', 'ending'].includes(normalized)) return 'title'
+  if (['card-grid', 'cards', 'card', 'grid', 'summary', 'bullets', 'list', 'content', 'section'].includes(normalized)) return 'card-grid'
+  if (['comparison', 'compare', 'vs', 'pros-cons', 'proscons', 'two-column', 'two-columns'].includes(normalized)) return 'comparison'
+  if (['timeline', 'roadmap', 'process', 'steps', 'step', 'flow'].includes(normalized)) return 'timeline'
+  if (['quote', 'big-quote', 'citation', 'insight', 'pullquote'].includes(normalized)) return 'quote'
+  if (['table', 'data', 'matrix'].includes(normalized)) return 'table'
+  return 'card-grid'
+}
+
+const normalizeSlideContent = (type: DeckSlide['type'], rawContent: unknown, index: number, projectName: string) => {
+  const content = rawContent && typeof rawContent === 'object' && !Array.isArray(rawContent)
+    ? rawContent as Record<string, unknown>
+    : {}
+
+  switch (type) {
+    case 'title': {
+      const title = toTextValue(content.title, index === 0 ? projectName : '핵심 정리')
+      const subtitle = toTextValue(content.subtitle, index === 0 ? '입력 문서를 기반으로 자동 생성된 슬라이드' : '발표 마무리')
+      const author = toTextValue(content.author, 'Auto Slide Foundry')
+      const dayLabel = toTextValue(content.dayLabel, index === 0 ? 'GENERATED DECK' : 'WRAP UP')
+      return { title, subtitle, author, dayLabel }
+    }
+    case 'comparison': {
+      let leftItems = toStringList(content.leftItems, 5)
+      let rightItems = toStringList(content.rightItems, 5)
+      const merged = toStringList(content.items, 8)
+      if ((leftItems.length === 0 || rightItems.length === 0) && merged.length >= 2) {
+        const splitPoint = Math.ceil(merged.length / 2)
+        if (leftItems.length === 0) leftItems = merged.slice(0, splitPoint)
+        if (rightItems.length === 0) rightItems = merged.slice(splitPoint)
+      }
+      return {
+        title: toTextValue(content.title, '비교 분석'),
+        leftTitle: toTextValue(content.leftTitle, '옵션 A'),
+        rightTitle: toTextValue(content.rightTitle, '옵션 B'),
+        leftItems: leftItems.length > 0 ? leftItems : ['핵심 포인트'],
+        rightItems: rightItems.length > 0 ? rightItems : ['핵심 포인트'],
+      }
+    }
+    case 'timeline': {
+      const timelineItems = Array.isArray(content.items)
+        ? content.items
+          .slice(0, 6)
+          .map((item, itemIndex) => {
+            if (typeof item === 'string') {
+              const text = sanitizeText(item, 120)
+              if (!text) return null
+              return { title: `단계 ${itemIndex + 1}`, description: text }
+            }
+            if (!item || typeof item !== 'object') return null
+            const typed = item as Record<string, unknown>
+            const title = toTextValue(typed.title, `단계 ${itemIndex + 1}`, 80)
+            const description = toTextValue(typed.description, '', 140)
+            return { title, description }
+          })
+          .filter((item): item is { title: string; description: string } => Boolean(item))
+        : []
+
+      if (timelineItems.length === 0) {
+        const steps = toStringList(content.steps, 6)
+        steps.forEach((step, stepIndex) => {
+          timelineItems.push({
+            title: `단계 ${stepIndex + 1}`,
+            description: step,
+          })
+        })
+      }
+
+      return {
+        title: toTextValue(content.title, '진행 단계'),
+        items: timelineItems.length > 0 ? timelineItems : [{ title: '단계 1', description: '핵심 과정을 정리합니다.' }],
+      }
+    }
+    case 'quote': {
+      const quote = toTextValue(content.quote, toTextValue(content.text, '핵심 메시지를 요약했습니다.'), 220)
+      return {
+        quote,
+        author: toTextValue(content.author, 'Auto Slide Foundry', 80),
+      }
+    }
+    case 'table': {
+      const headers = toStringList(content.headers, 6, 50)
+      const fallbackHeaders = headers.length > 0 ? headers : toStringList(content.columns, 6, 50)
+      let rows = toTableRows(content.rows, 6, Math.max(2, fallbackHeaders.length || 2))
+      if (rows.length === 0) rows = toTableRows(content.data, 6, Math.max(2, fallbackHeaders.length || 2))
+      const resolvedHeaders = fallbackHeaders.length > 0
+        ? fallbackHeaders
+        : (rows[0]?.map((_cell, cellIndex) => `항목 ${cellIndex + 1}`) || ['항목', '내용'])
+
+      return {
+        title: toTextValue(content.title, '데이터 요약'),
+        headers: resolvedHeaders,
+        rows: rows.length > 0 ? rows : [['요약', '데이터를 찾지 못했습니다']],
+      }
+    }
+    case 'card-grid':
+    default: {
+      const items = dedupeStrings([
+        ...toStringList(content.items, 6),
+        ...toStringList(content.bullets, 6),
+        ...toStringList(content.points, 6),
+        ...toStringList(content.list, 6),
+      ], 6)
+
+      if (items.length === 0) {
+        const summary = toTextValue(content.summary, '', 180)
+        if (summary) items.push(summary)
+      }
+
+      return {
+        title: toTextValue(content.title, '핵심 요약'),
+        items: items.length > 0 ? items : ['핵심 포인트를 정리했습니다.'],
+      }
+    }
+  }
+}
+
+interface MarkdownSection {
+  heading: string
+  level: number
+  bullets: string[]
+  ordered: string[]
+  paragraphs: string[]
+  quotes: string[]
+  tableRows: string[][]
+}
+
+const stripMarkdownInline = (value: string) => (
+  value
+    .replace(/!\[[^\]]*]\([^)]+\)/g, '')
+    .replace(/\[([^\]]+)]\([^)]+\)/g, '$1')
+    .replace(/`{1,3}([^`]+)`{1,3}/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    .replace(/~~([^~]+)~~/g, '$1')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+)
+
+const parseMarkdownTableRow = (line: string): string[] | null => {
+  if (!line.startsWith('|') || !line.endsWith('|')) return null
+  const cells = line
+    .split('|')
+    .slice(1, -1)
+    .map((cell) => stripMarkdownInline(cell))
+  if (cells.length < 2) return null
+  const dividerOnly = cells.every((cell) => /^:?-{3,}:?$/.test(cell))
+  return dividerOnly ? [] : cells
+}
+
+const hasMarkdownSectionContent = (section: MarkdownSection) => (
+  section.bullets.length > 0 ||
+  section.ordered.length > 0 ||
+  section.paragraphs.length > 0 ||
+  section.quotes.length > 0 ||
+  section.tableRows.length > 0
+)
+
+const splitIntoSentences = (text: string) => (
+  text
+    .replace(/\s+/g, ' ')
+    .split(/(?<=[.!?。！？])\s+/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 8)
+)
+
+const parseMarkdownSections = (source: string): MarkdownSection[] => {
+  const lines = sanitizeMarkdownText(source, MAX_SOURCE_CHARS).split('\n')
+  const sections: MarkdownSection[] = []
+  let current: MarkdownSection = {
+    heading: '개요',
+    level: 2,
+    bullets: [],
+    ordered: [],
+    paragraphs: [],
+    quotes: [],
+    tableRows: [],
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line) continue
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/)
+    if (headingMatch) {
+      if (hasMarkdownSectionContent(current) || current.heading !== '개요') {
+        sections.push(current)
+      }
+
+      current = {
+        heading: stripMarkdownInline(headingMatch[2]) || `섹션 ${sections.length + 1}`,
+        level: headingMatch[1].length,
+        bullets: [],
+        ordered: [],
+        paragraphs: [],
+        quotes: [],
+        tableRows: [],
+      }
+      continue
+    }
+
+    const tableRow = parseMarkdownTableRow(line)
+    if (tableRow) {
+      if (tableRow.length > 0) current.tableRows.push(tableRow)
+      continue
+    }
+
+    const quoteMatch = line.match(/^>\s*(.+)$/)
+    if (quoteMatch) {
+      const quote = stripMarkdownInline(quoteMatch[1])
+      if (quote) current.quotes.push(trimEllipsis(quote, 220))
+      continue
+    }
+
+    const bulletMatch = line.match(/^[-*+]\s+(.+)$/)
+    if (bulletMatch) {
+      const bullet = stripMarkdownInline(bulletMatch[1])
+      if (bullet) current.bullets.push(trimEllipsis(bullet, 160))
+      continue
+    }
+
+    const orderedMatch = line.match(/^\d+[.)]\s+(.+)$/)
+    if (orderedMatch) {
+      const step = stripMarkdownInline(orderedMatch[1])
+      if (step) current.ordered.push(trimEllipsis(step, 160))
+      continue
+    }
+
+    const paragraph = stripMarkdownInline(line)
+    if (paragraph) current.paragraphs.push(trimEllipsis(paragraph, 220))
+  }
+
+  if (hasMarkdownSectionContent(current) || sections.length === 0) {
+    sections.push(current)
+  }
+
+  return sections
+}
+
+const sectionPoints = (section: MarkdownSection, maxItems = 6) => dedupeStrings([
+  ...section.bullets,
+  ...section.ordered,
+  ...section.paragraphs.flatMap((paragraph) => splitIntoSentences(paragraph)),
+], maxItems)
+
+const buildSlideFromMarkdownSection = (section: MarkdownSection): DeckSlide => {
+  const heading = section.heading || '핵심 내용'
+  const points = sectionPoints(section, 8)
+  const comparisonHint = /(\bvs\.?\b|비교|장단점|pros|cons|찬반|before|after|대안|옵션)/i.test(heading)
+  const timelineHint = /(단계|절차|프로세스|과정|로드맵|timeline|flow)/i.test(heading)
+
+  if (section.tableRows.length >= 2) {
+    const headers = section.tableRows[0].slice(0, 6)
+    const rows = section.tableRows
+      .slice(1, 7)
+      .map((row) => Array.from({ length: headers.length }, (_unused, cellIndex) => trimEllipsis(row[cellIndex] || '', 80)))
+      .filter((row) => row.some((cell) => cell.length > 0))
+
+    if (headers.length > 1 && rows.length > 0) {
+      return {
+        type: 'table',
+        content: {
+          title: heading,
+          headers,
+          rows,
+        }
+      }
+    }
+  }
+
+  if ((timelineHint || section.ordered.length >= 3) && points.length >= 2) {
+    const steps = section.ordered.length > 0 ? dedupeStrings(section.ordered, 6) : points.slice(0, 6)
+    return {
+      type: 'timeline',
+      content: {
+        title: heading,
+        items: steps.map((step, stepIndex) => ({
+          title: `단계 ${stepIndex + 1}`,
+          description: step,
+        })),
+      }
+    }
+  }
+
+  if (comparisonHint && points.length >= 2) {
+    const vsMatch = heading.match(/^(.+?)\s+(?:vs\.?|VS|대\s*비|비교)\s+(.+)$/i)
+    const splitPoint = Math.ceil(points.length / 2)
+    return {
+      type: 'comparison',
+      content: {
+        title: heading,
+        leftTitle: vsMatch ? trimEllipsis(vsMatch[1], 40) : '옵션 A',
+        rightTitle: vsMatch ? trimEllipsis(vsMatch[2], 40) : '옵션 B',
+        leftItems: points.slice(0, splitPoint),
+        rightItems: points.slice(splitPoint),
+      }
+    }
+  }
+
+  if (section.quotes.length > 0 && points.length <= 2) {
+    return {
+      type: 'quote',
+      content: {
+        quote: section.quotes[0],
+        author: heading,
+      }
+    }
+  }
+
+  return {
+    type: 'card-grid',
+    content: {
+      title: heading,
+      items: points.length > 0 ? points.slice(0, 6) : ['핵심 포인트를 정리했습니다.'],
+    }
+  }
+}
+
 const normalizeSlides = (rawSlides: DeckSlide[], projectName: string) => {
   const safeSlides = rawSlides
-    .filter(slide => slide && typeof slide === 'object')
-    .map((slide) => ({
-      type: typeof slide.type === 'string' ? slide.type : 'card-grid',
-      content: slide.content && typeof slide.content === 'object' ? slide.content : {},
-    }))
+    .filter((slide) => slide && typeof slide === 'object')
+    .map((slide, index) => {
+      const type = normalizeSlideType(slide.type)
+      const content = normalizeSlideContent(type, slide.content, index, projectName)
+      return { type, content }
+    })
     .slice(0, 12)
 
   if (safeSlides.length === 0) {
@@ -579,82 +1029,193 @@ const normalizeSlides = (rawSlides: DeckSlide[], projectName: string) => {
   if (safeSlides[0].type !== 'title') {
     safeSlides.unshift({
       type: 'title',
-      content: {
-        title: projectName,
-        subtitle: '입력 문서를 기반으로 자동 생성된 슬라이드',
-      }
+      content: normalizeSlideContent('title', { title: projectName }, 0, projectName),
     })
   }
 
   return safeSlides
 }
 
-const buildFallbackSlidesFromSource = (source: string, sourceType: SourceType, projectName: string): DeckSlide[] => {
-  const normalized = source.replace(/\s+/g, ' ').trim()
-  const parts = normalized
-    .split(/[\n\r]+|(?<=[.!?。！？])\s+/)
-    .map((part) => part.trim())
-    .filter((part) => part.length > 12)
+const buildFallbackSlidesFromMarkdown = (source: string, projectName: string): DeckSlide[] => {
+  const sections = parseMarkdownSections(source)
+  const summaryPoints = dedupeStrings(sections.flatMap((section) => sectionPoints(section, 4)), 6)
+  const quoteCandidate = dedupeStrings(sections.flatMap((section) => section.quotes), 1)[0]
+  const subtitleSeed = (
+    sections[0]?.paragraphs[0] ||
+    sections[0]?.heading ||
+    summaryPoints[0] ||
+    '입력 마크다운을 분석해 발표 흐름을 생성했습니다.'
+  )
 
-  const points = (parts.length > 0 ? parts : [normalized])
-    .slice(0, 6)
-    .map((part) => part.length > 120 ? `${part.slice(0, 117)}...` : part)
-
-  const quoteText = points[0] || normalized.slice(0, 140) || '입력 문서를 기반으로 핵심 내용을 추출했습니다.'
-
-  return normalizeSlides([
+  const slides: DeckSlide[] = [
     {
       type: 'title',
       content: {
         title: projectName,
-        subtitle: `${sourceType.toUpperCase()} 입력 자동 생성 (안전 모드)`,
+        subtitle: trimEllipsis(subtitleSeed, 90),
+      }
+    }
+  ]
+
+  if (summaryPoints.length > 0) {
+    slides.push({
+      type: 'card-grid',
+      content: {
+        title: '문서 핵심 요약',
+        items: summaryPoints,
+      }
+    })
+  }
+
+  for (const section of sections) {
+    if (!hasMarkdownSectionContent(section)) continue
+    if (slides.length >= 8) break
+    slides.push(buildSlideFromMarkdownSection(section))
+  }
+
+  if (quoteCandidate && slides.length < 9) {
+    slides.push({
+      type: 'quote',
+      content: {
+        quote: quoteCandidate,
+        author: 'Source Note',
+      }
+    })
+  }
+
+  if (slides.length < 3) {
+    slides.push({
+      type: 'card-grid',
+      content: {
+        title: '핵심 포인트',
+        items: ['문서 구조를 분석해 핵심 항목을 추출했습니다.'],
+      }
+    })
+  }
+
+  return normalizeSlides(slides, projectName)
+}
+
+const buildFallbackSlidesFromPlainText = (source: string, sourceType: SourceType, projectName: string): DeckSlide[] => {
+  const normalized = source.replace(/\s+/g, ' ').trim()
+  const sentences = dedupeStrings(splitIntoSentences(normalized).map((item) => trimEllipsis(item, 120)), 8)
+  const points = sentences.length > 0
+    ? sentences
+    : dedupeStrings(
+      normalized
+        .split(/[;•·]\s*| - /)
+        .map((part) => trimEllipsis(part.trim(), 120))
+        .filter((part) => part.length > 10),
+      6
+    )
+
+  const slides: DeckSlide[] = [
+    {
+      type: 'title',
+      content: {
+        title: projectName,
+        subtitle: `${sourceType.toUpperCase()} 입력을 분석해 자동 구성`,
       }
     },
     {
       type: 'card-grid',
       content: {
         title: '핵심 요약',
-        items: points.length > 0 ? points : ['입력 문서를 분석해 요약을 생성했습니다.'],
-      }
-    },
-    {
-      type: 'quote',
-      content: {
-        quote: quoteText,
-        author: 'Auto Slide Foundry',
+        items: points.length > 0 ? points.slice(0, 6) : ['입력 문서를 분석해 요약을 생성했습니다.'],
       }
     }
-  ], projectName)
+  ]
+
+  if (points.length >= 4) {
+    const splitPoint = Math.ceil(points.length / 2)
+    slides.push({
+      type: 'comparison',
+      content: {
+        title: '핵심 비교',
+        leftTitle: '관점 A',
+        rightTitle: '관점 B',
+        leftItems: points.slice(0, splitPoint),
+        rightItems: points.slice(splitPoint),
+      }
+    })
+  }
+
+  if (points.length >= 3 && slides.length < 5) {
+    slides.push({
+      type: 'timeline',
+      content: {
+        title: '핵심 흐름',
+        items: points.slice(0, 5).map((point, pointIndex) => ({
+          title: `단계 ${pointIndex + 1}`,
+          description: point,
+        })),
+      }
+    })
+  }
+
+  slides.push({
+    type: 'quote',
+    content: {
+      quote: points[0] || trimEllipsis(normalized, 180) || '입력 문서를 기반으로 핵심 인사이트를 정리했습니다.',
+      author: 'Auto Slide Foundry',
+    }
+  })
+
+  return normalizeSlides(slides, projectName)
+}
+
+const buildFallbackSlidesFromSource = (source: string, sourceType: SourceType, projectName: string): DeckSlide[] => {
+  if (sourceType === 'markdown') {
+    return buildFallbackSlidesFromMarkdown(source, projectName)
+  }
+  return buildFallbackSlidesFromPlainText(source, sourceType, projectName)
+}
+
+const extractSlidesFromAiResponse = (raw: string): unknown[] => {
+  const trimmed = raw.trim()
+  if (!trimmed) throw new Error('AI 응답이 비어 있습니다')
+
+  const tryParse = (input: string): unknown[] | null => {
+    try {
+      const parsed = JSON.parse(input)
+      if (Array.isArray(parsed)) return parsed
+      if (parsed && typeof parsed === 'object') {
+        const typed = parsed as Record<string, unknown>
+        if (Array.isArray(typed.slides)) return typed.slides
+      }
+      return null
+    } catch {
+      return null
+    }
+  }
+
+  const directParsed = tryParse(trimmed)
+  if (directParsed) return directParsed
+
+  const objectMatch = trimmed.match(/\{[\s\S]*\}/)
+  if (objectMatch) {
+    const parsed = tryParse(objectMatch[0])
+    if (parsed) return parsed
+  }
+
+  const arrayMatch = trimmed.match(/\[[\s\S]*\]/)
+  if (arrayMatch) {
+    const parsed = tryParse(arrayMatch[0])
+    if (parsed) return parsed
+  }
+
+  throw new Error('AI 응답에서 슬라이드 배열을 찾지 못했습니다')
 }
 
 const generateSlidesWithAI = async (source: string, sourceType: SourceType, projectName: string): Promise<DeckSlide[]> => {
   if (!process.env.ZAI_API_KEY) {
-    return normalizeSlides([
-      {
-        type: 'title',
-        content: {
-          title: projectName,
-          subtitle: 'API 키 미설정으로 기본 자동 생성 결과를 표시합니다.',
-        }
-      },
-      {
-        type: 'card-grid',
-        content: {
-          title: '자동 생성 요약',
-          items: [
-            `${sourceType.toUpperCase()} 입력이 수신되었습니다`,
-            '실제 AI 생성은 ZAI_API_KEY 설정 후 활성화됩니다',
-            '템플릿 적용 및 HTML 내보내기는 정상 동작합니다',
-          ]
-        }
-      }
-    ], projectName)
+    return buildFallbackSlidesFromSource(source, sourceType, projectName)
   }
 
-  const systemPrompt = `너는 발표 슬라이드를 자동 생성하는 엔진이다.
-입력 텍스트를 분석해서 5~9장의 슬라이드를 JSON 배열로만 반환하라.
+  const systemPrompt = `너는 마크다운/문서 입력을 발표 슬라이드 구조로 바꾸는 컴파일러다.
+5~9장의 슬라이드를 JSON 배열로만 출력하라.
 
-슬라이드 타입은 아래만 사용한다:
+허용 타입:
 - title
 - card-grid
 - comparison
@@ -662,12 +1223,27 @@ const generateSlidesWithAI = async (source: string, sourceType: SourceType, proj
 - quote
 - table
 
-규칙:
+타입별 content 필드 규격:
+- title: { "title": string, "subtitle": string }
+- card-grid: { "title": string, "items": string[] }
+- comparison: { "title": string, "leftTitle": string, "rightTitle": string, "leftItems": string[], "rightItems": string[] }
+- timeline: { "title": string, "items": [{"title": string, "description": string}] }
+- quote: { "quote": string, "author": string }
+- table: { "title": string, "headers": string[], "rows": string[][] }
+
+내용 매핑 규칙:
+1) heading/섹션 구조를 유지해 흐름을 만든다.
+2) vs/장단점/찬반 내용은 comparison을 우선 사용한다.
+3) 단계형(번호 목록, 절차)은 timeline을 사용한다.
+4) 표나 수치 비교는 table을 사용한다.
+5) 핵심 문장/인용은 quote를 사용한다.
+6) 각 슬라이드는 한 가지 핵심만 담고 텍스트는 간결하게 유지한다.
+
+출력 규칙:
 1) 첫 슬라이드는 반드시 title
-2) 각 슬라이드는 핵심 하나만 전달
-3) 한국어로 작성
-4) type 외 필드는 content로 들어갈 데이터만 포함
-5) 절대 코드블록 마크다운을 사용하지 말고 JSON 배열만 출력`
+2) 한국어로 작성
+3) JSON 외 텍스트 금지
+4) 코드블록 마크다운 금지`
 
   const userPrompt = `입력 타입: ${sourceType}
 프로젝트명: ${projectName}
@@ -685,36 +1261,25 @@ ${source}`
   })
 
   const content = completion.choices[0]?.message?.content || ''
-  const jsonMatch = content.match(/\[[\s\S]*\]/)
-  if (!jsonMatch) {
-    throw new Error('AI 응답에서 JSON 배열을 찾지 못했습니다')
+  const parsedSlides = extractSlidesFromAiResponse(content)
+  if (!Array.isArray(parsedSlides) || parsedSlides.length === 0) {
+    throw new Error('AI 응답 슬라이드가 비어 있습니다')
   }
 
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(jsonMatch[0])
-  } catch {
-    throw new Error('AI 응답 JSON 파싱 실패')
-  }
-
-  if (!Array.isArray(parsed)) {
-    throw new Error('AI 응답 형식이 배열이 아닙니다')
-  }
-
-  const slides = parsed.map((item) => {
+  const slides = parsedSlides.map((item) => {
     if (!item || typeof item !== 'object') {
       return { type: 'card-grid', content: { title: '요약', items: [] } }
     }
 
     const typed = item as Record<string, unknown>
-    const type = typeof typed.type === 'string' ? typed.type : 'card-grid'
+    const rawType = typed.type
     const directContent = typed.content
     if (directContent && typeof directContent === 'object' && !Array.isArray(directContent)) {
-      return { type, content: directContent as Record<string, unknown> }
+      return { type: normalizeSlideType(rawType), content: directContent as Record<string, unknown> }
     }
 
     const { type: _discardType, ...rest } = typed
-    return { type, content: rest as Record<string, unknown> }
+    return { type: normalizeSlideType(rawType), content: rest as Record<string, unknown> }
   })
 
   return normalizeSlides(slides, projectName)
@@ -889,7 +1454,7 @@ const handleGenerate = async (
 
     const effectiveSourceType = resolvedSourceType || sourceType
 
-    if (!sourceText || sourceText.length < 20) {
+    if (!sourceText || sourceText.length < MIN_SOURCE_TEXT_CHARS) {
       throw new RequestValidationError('입력 문서의 내용이 너무 짧습니다', 'SOURCE_TEXT_TOO_SHORT')
     }
 
@@ -928,10 +1493,23 @@ app.post('/api/generate/from-url', authMiddleware, async (req, res) => {
 
 app.post('/api/generate/from-markdown', authMiddleware, async (req, res) => {
   await handleGenerate(req, res, 'markdown', async () => {
+    const base64 = typeof req.body?.base64 === 'string' ? req.body.base64 : ''
+    const fileName = typeof req.body?.fileName === 'string' ? req.body.fileName : 'document.md'
+    if (base64.trim()) {
+      const sourceText = await extractMarkdownContent(base64)
+      const safeFileName = path.basename(fileName || 'document.md')
+      return {
+        sourceText,
+        sourceLabel: safeFileName,
+        projectNameHint: safeFileName.replace(/\.(md|markdown|txt)$/i, '') || 'Markdown Deck',
+      }
+    }
+
+    // Backward compatibility: still accept inline markdown text.
     const markdown = typeof req.body?.markdown === 'string' ? req.body.markdown : ''
-    if (!markdown.trim()) throw new RequestValidationError('마크다운을 입력하세요')
+    if (!markdown.trim()) throw new RequestValidationError('마크다운 파일을 업로드하세요')
     return {
-      sourceText: sanitizeText(markdown),
+      sourceText: sanitizeMarkdownText(markdown),
       sourceLabel: 'markdown',
       projectNameHint: 'Markdown Deck',
     }

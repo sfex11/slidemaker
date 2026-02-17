@@ -65,7 +65,7 @@ const STORAGE_TOKEN_KEY = 'slidesaas_token'
 const modeLabels: Record<SourceMode, string> = {
   url: '웹주소',
   pdf: 'PDF',
-  markdown: '마크다운',
+  markdown: 'Markdown 파일',
 }
 
 const endpointByMode: Record<SourceMode, string> = {
@@ -92,7 +92,8 @@ function App() {
   const [sourceMode, setSourceMode] = useState<SourceMode>('url')
   const [projectName, setProjectName] = useState('')
   const [urlInput, setUrlInput] = useState('')
-  const [markdownInput, setMarkdownInput] = useState('')
+  const [markdownFileName, setMarkdownFileName] = useState('')
+  const [markdownBase64, setMarkdownBase64] = useState('')
   const [pdfFileName, setPdfFileName] = useState('')
   const [pdfBase64, setPdfBase64] = useState('')
 
@@ -115,7 +116,7 @@ function App() {
     !isGenerating &&
     (
       (sourceMode === 'url' && urlInput.trim().length > 0) ||
-      (sourceMode === 'markdown' && markdownInput.trim().length > 0) ||
+      (sourceMode === 'markdown' && markdownBase64.length > 0) ||
       (sourceMode === 'pdf' && pdfBase64.length > 0)
     )
   )
@@ -300,7 +301,7 @@ function App() {
 
     reader.onload = () => {
       if (typeof reader.result !== 'string') {
-        reject(new Error('PDF 파일을 읽을 수 없습니다'))
+        reject(new Error('파일을 읽을 수 없습니다'))
         return
       }
 
@@ -308,7 +309,7 @@ function App() {
       resolve(base64)
     }
 
-    reader.onerror = () => reject(new Error('PDF 파일 읽기 실패'))
+    reader.onerror = () => reject(new Error('파일 읽기 실패'))
     reader.readAsDataURL(file)
   })
 
@@ -340,6 +341,36 @@ function App() {
     }
   }
 
+  const handleMarkdownChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) {
+      setMarkdownFileName('')
+      setMarkdownBase64('')
+      return
+    }
+
+    const fileName = file.name.toLowerCase()
+    const isSupported = fileName.endsWith('.md') || fileName.endsWith('.markdown') || fileName.endsWith('.txt')
+    if (!isSupported) {
+      setActionError('Markdown(.md/.markdown/.txt) 파일만 업로드할 수 있습니다.')
+      event.target.value = ''
+      return
+    }
+
+    try {
+      const encoded = await fileToBase64(file)
+      setMarkdownFileName(file.name)
+      setMarkdownBase64(encoded)
+      setActionError('')
+    } catch (error) {
+      const typedError = error as Error
+      setActionError(typedError.message || 'Markdown 파일 처리에 실패했습니다.')
+      setMarkdownFileName('')
+      setMarkdownBase64('')
+      event.target.value = ''
+    }
+  }
+
   const handleGenerate = async () => {
     if (!canGenerate) return
 
@@ -356,7 +387,8 @@ function App() {
         payload.url = urlInput.trim()
       }
       if (sourceMode === 'markdown') {
-        payload.markdown = markdownInput.trim()
+        payload.base64 = markdownBase64
+        payload.fileName = markdownFileName || 'document.md'
       }
       if (sourceMode === 'pdf') {
         payload.base64 = pdfBase64
@@ -374,7 +406,10 @@ function App() {
       await exportProjectDeck(result.project.id, { openInPreview: true, download: false, quiet: true })
 
       if (sourceMode === 'url') setUrlInput('')
-      if (sourceMode === 'markdown') setMarkdownInput('')
+      if (sourceMode === 'markdown') {
+        setMarkdownFileName('')
+        setMarkdownBase64('')
+      }
       if (sourceMode === 'pdf') {
         setPdfFileName('')
         setPdfBase64('')
@@ -660,14 +695,17 @@ function App() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
               >
-                <span>마크다운 본문</span>
-                <textarea
-                  rows={10}
-                  value={markdownInput}
-                  onChange={(event) => setMarkdownInput(event.target.value)}
-                  placeholder={'# 제목\n\n## 핵심 포인트\n- 항목 1\n- 항목 2'}
-                />
-                <small>문단 구조를 기준으로 타이틀/비교/테이블 슬라이드를 자동 배치합니다.</small>
+                <span>Markdown 파일</span>
+                <label className="file-drop">
+                  <input
+                    type="file"
+                    accept=".md,.markdown,.txt,text/markdown,text/plain"
+                    onChange={handleMarkdownChange}
+                  />
+                  <FileText size={16} />
+                  {markdownFileName ? markdownFileName : 'Markdown 업로드'}
+                </label>
+                <small>헤딩/목록/표 구조를 분석해 타입별 슬라이드를 자동 배치합니다.</small>
               </motion.div>
             )}
           </AnimatePresence>
