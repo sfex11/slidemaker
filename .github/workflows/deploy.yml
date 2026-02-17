@@ -27,9 +27,20 @@ jobs:
             APP_DIR="/home/ubuntu/slidemaker"
             REPO_URL="https://github.com/sfex11/slidemaker.git"
             SERVICE_NAME="slide-maker"
+            PUBLIC_HOST="129.154.63.231"
             LOCK_FILE="/tmp/${SERVICE_NAME}.deploy.lock"
             DB_FILE="${APP_DIR}/prisma/dev.db"
             DB_BACKUP="/tmp/${SERVICE_NAME}.dev.db.bak"
+
+            probe_http() {
+              local url="$1"
+              local code
+              code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$url" || true)
+              if [ -z "$code" ]; then
+                code="000"
+              fi
+              echo "$code"
+            }
 
             # 중복 배포 방지
             exec 9>"${LOCK_FILE}"
@@ -97,5 +108,54 @@ jobs:
               fi
             fi
 
-            # 헬스체크(앱 내부 포트 기준)
+            # 헬스체크(앱 내부 포트 기준, 실패 시 배포 실패)
             curl -fsS --max-time 10 "http://127.0.0.1:3003/api/health"
+
+            echo ""
+            echo "=== Deployment Reachability Diagnostics ==="
+            echo "Expected direct app URL: http://${PUBLIC_HOST}:3003/"
+            echo "Expected proxied URL (if Nginx configured): http://${PUBLIC_HOST}/"
+
+            echo ""
+            echo "[1/4] Listening ports"
+            sudo ss -lntp | grep -E "(:3003|:80|:443)" || true
+
+            echo ""
+            echo "[2/4] Local loopback checks"
+            LOCAL_APP_HEALTH=$(probe_http "http://127.0.0.1:3003/api/health")
+            LOCAL_APP_ROOT=$(probe_http "http://127.0.0.1:3003/")
+            echo "127.0.0.1:3003/api/health => ${LOCAL_APP_HEALTH}"
+            echo "127.0.0.1:3003/           => ${LOCAL_APP_ROOT}"
+
+            if command -v nginx >/dev/null 2>&1; then
+              NGINX_LOCAL_ROOT=$(probe_http "http://127.0.0.1/")
+              NGINX_LOCAL_HEALTH=$(probe_http "http://127.0.0.1/api/health")
+              echo "127.0.0.1/                => ${NGINX_LOCAL_ROOT}"
+              echo "127.0.0.1/api/health      => ${NGINX_LOCAL_HEALTH}"
+            fi
+
+            echo ""
+            echo "[3/4] Public host checks"
+            PUBLIC_APP_HEALTH=$(probe_http "http://${PUBLIC_HOST}:3003/api/health")
+            PUBLIC_APP_ROOT=$(probe_http "http://${PUBLIC_HOST}:3003/")
+            PUBLIC_WEB_ROOT=$(probe_http "http://${PUBLIC_HOST}/")
+            PUBLIC_WEB_HEALTH=$(probe_http "http://${PUBLIC_HOST}/api/health")
+            echo "${PUBLIC_HOST}:3003/api/health => ${PUBLIC_APP_HEALTH}"
+            echo "${PUBLIC_HOST}:3003/           => ${PUBLIC_APP_ROOT}"
+            echo "${PUBLIC_HOST}/                => ${PUBLIC_WEB_ROOT}"
+            echo "${PUBLIC_HOST}/api/health      => ${PUBLIC_WEB_HEALTH}"
+
+            echo ""
+            echo "[4/4] Quick interpretation"
+            if [ "${PUBLIC_APP_HEALTH}" != "200" ]; then
+              echo "WARN: :3003 direct access is not 200. Check cloud security list / UFW / iptables for TCP 3003."
+            fi
+            if [ "${PUBLIC_WEB_ROOT}" = "000" ] || [ "${PUBLIC_WEB_ROOT}" = "404" ]; then
+              echo "WARN: root domain is not routed to app. Check Nginx server_name and proxy_pass to 127.0.0.1:3003."
+            fi
+            if [ "${PUBLIC_APP_HEALTH}" = "200" ]; then
+              echo "OK: Direct app URL should work at http://${PUBLIC_HOST}:3003/"
+            fi
+            if [ "${PUBLIC_WEB_ROOT}" = "200" ] || [ "${PUBLIC_WEB_ROOT}" = "301" ] || [ "${PUBLIC_WEB_ROOT}" = "302" ]; then
+              echo "OK: Proxied URL should work at http://${PUBLIC_HOST}/"
+            fi
