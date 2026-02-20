@@ -19,6 +19,14 @@ interface DeckSlide {
   content: Record<string, unknown>
 }
 
+interface DeckQualityReport {
+  structure: number
+  readability: number
+  diversity: number
+  overall: number
+  issues: string[]
+}
+
 type AuthenticatedRequest = express.Request & { userId: string }
 
 class RequestValidationError extends Error {
@@ -43,6 +51,9 @@ const MAX_PDF_BYTES = 8 * 1024 * 1024
 const MAX_TEXT_SOURCE_BYTES = 2 * 1024 * 1024
 const MAX_MARKDOWN_BYTES = 2 * 1024 * 1024
 const MIN_SOURCE_TEXT_CHARS = 20
+const MIN_TARGET_SLIDES = 5
+const MAX_TARGET_SLIDES = 12
+const QUALITY_FALLBACK_THRESHOLD = 60
 const URL_FETCH_TIMEOUT_MS = 12_000
 const MAX_URL_FETCH_RETRIES = 2
 const allowedFileRoots = (process.env.ALLOWED_FILE_ROOTS || `${process.cwd()},/tmp`)
@@ -1171,6 +1182,213 @@ const buildFallbackSlidesFromSource = (source: string, sourceType: SourceType, p
   return buildFallbackSlidesFromPlainText(source, sourceType, projectName)
 }
 
+const clampScore = (value: number) => Math.max(0, Math.min(100, Math.round(value)))
+
+const collectTextValues = (value: unknown, bucket: string[]) => {
+  if (typeof value === 'string') {
+    const cleaned = sanitizeText(value, 260)
+    if (cleaned) bucket.push(cleaned)
+    return
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectTextValues(item, bucket))
+    return
+  }
+
+  if (value && typeof value === 'object') {
+    Object.values(value).forEach((item) => collectTextValues(item, bucket))
+  }
+}
+
+const slideTextFragments = (slide: DeckSlide) => {
+  const texts: string[] = []
+  collectTextValues(slide.content, texts)
+  return texts
+}
+
+const buildSourcePoints = (source: string, maxItems = 10) => {
+  const normalized = sanitizeText(source, MAX_SOURCE_CHARS)
+  const sentencePoints = dedupeStrings(
+    splitIntoSentences(normalized).map((text) => trimEllipsis(text, 120)),
+    maxItems
+  )
+  if (sentencePoints.length > 0) return sentencePoints
+
+  return dedupeStrings(
+    normalized
+      .split(/\n|[;•·]/)
+      .map((text) => trimEllipsis(text.trim(), 120))
+      .filter((text) => text.length > 10),
+    maxItems
+  )
+}
+
+const ensureMinimumSlidesCount = (slides: DeckSlide[], source: string, projectName: string) => {
+  const targetCount = Math.min(Math.max(MIN_TARGET_SLIDES, 3), MAX_TARGET_SLIDES)
+  if (slides.length >= targetCount) return slides.slice(0, MAX_TARGET_SLIDES)
+
+  const repaired = [...slides]
+  const points = buildSourcePoints(source, 12)
+  let pointer = 0
+  while (repaired.length < targetCount) {
+    const point = points[pointer % Math.max(points.length, 1)] || `핵심 포인트 ${repaired.length + 1}`
+    const pattern = repaired.length % 3
+
+    if (pattern === 0) {
+      repaired.push({
+        type: 'card-grid',
+        content: {
+          title: '추가 핵심 요약',
+          items: [point],
+        }
+      })
+    } else if (pattern === 1) {
+      repaired.push({
+        type: 'timeline',
+        content: {
+          title: '추가 핵심 흐름',
+          items: [{ title: `단계 ${pointer + 1}`, description: point }],
+        }
+      })
+    } else {
+      repaired.push({
+        type: 'quote',
+        content: {
+          quote: point,
+          author: projectName,
+        }
+      })
+    }
+    pointer += 1
+  }
+
+  return repaired.slice(0, MAX_TARGET_SLIDES)
+}
+
+const evaluateSlidesQuality = (slides: DeckSlide[]): DeckQualityReport => {
+  const issues: string[] = []
+
+  let structure = 100
+  if (slides.length < MIN_TARGET_SLIDES) {
+    structure -= 30
+    issues.push(`슬라이드 수가 부족합니다 (${slides.length}/${MIN_TARGET_SLIDES}).`)
+  }
+  if (slides.length > MAX_TARGET_SLIDES) {
+    structure -= 12
+    issues.push(`슬라이드 수가 많습니다 (${slides.length}/${MAX_TARGET_SLIDES}).`)
+  }
+  if (slides[0]?.type !== 'title') {
+    structure -= 45
+    issues.push('첫 슬라이드가 title 구조가 아닙니다.')
+  }
+
+  const bodyCount = slides.filter((slide) => ['card-grid', 'comparison', 'timeline', 'table'].includes(slide.type)).length
+  if (bodyCount < 2) {
+    structure -= 20
+    issues.push('핵심 본문 슬라이드가 부족합니다.')
+  }
+
+  const endingType = slides[slides.length - 1]?.type
+  if (!endingType || !['title', 'quote', 'card-grid'].includes(endingType)) {
+    structure -= 8
+    issues.push('마무리 슬라이드 구조가 약합니다.')
+  }
+  structure = clampScore(structure)
+
+  let readability = 100
+  let longTextCount = 0
+  let denseSlideCount = 0
+  let emptySlideCount = 0
+
+  slides.forEach((slide) => {
+    const fragments = slideTextFragments(slide)
+    if (fragments.length === 0) {
+      emptySlideCount += 1
+      return
+    }
+
+    fragments.forEach((text) => {
+      if (text.length > 140) longTextCount += 1
+    })
+
+    if (slide.type === 'card-grid') {
+      const itemCount = Array.isArray(slide.content.items) ? slide.content.items.length : 0
+      if (itemCount > 6) denseSlideCount += 1
+    }
+    if (slide.type === 'timeline') {
+      const itemCount = Array.isArray(slide.content.items) ? slide.content.items.length : 0
+      if (itemCount > 6) denseSlideCount += 1
+    }
+    if (slide.type === 'table') {
+      const rowCount = Array.isArray(slide.content.rows) ? slide.content.rows.length : 0
+      if (rowCount > 7) denseSlideCount += 1
+    }
+  })
+
+  readability -= longTextCount * 4
+  readability -= denseSlideCount * 8
+  readability -= emptySlideCount * 14
+
+  if (longTextCount > 0) issues.push(`긴 문장이 많습니다 (${longTextCount}개).`)
+  if (denseSlideCount > 0) issues.push(`과밀 슬라이드가 있습니다 (${denseSlideCount}개).`)
+  if (emptySlideCount > 0) issues.push(`내용이 비어 있는 슬라이드가 있습니다 (${emptySlideCount}개).`)
+  readability = clampScore(readability)
+
+  const uniqueTypeCount = new Set(slides.map((slide) => slide.type)).size
+  let diversity = 40
+  if (uniqueTypeCount >= 4) diversity = 100
+  else if (uniqueTypeCount === 3) diversity = 85
+  else if (uniqueTypeCount === 2) diversity = 65
+  if (uniqueTypeCount < 3) {
+    issues.push(`슬라이드 타입 다양성이 낮습니다 (${uniqueTypeCount}종).`)
+  }
+  diversity = clampScore(diversity)
+
+  const overall = clampScore(structure * 0.45 + readability * 0.35 + diversity * 0.2)
+
+  return {
+    structure,
+    readability,
+    diversity,
+    overall,
+    issues: dedupeStrings(issues, 8),
+  }
+}
+
+const applyQualitySelfHealing = (
+  rawSlides: DeckSlide[],
+  source: string,
+  sourceType: SourceType,
+  projectName: string
+) => {
+  const normalized = normalizeSlides(rawSlides, projectName).slice(0, MAX_TARGET_SLIDES)
+  const repaired = normalizeSlides(
+    ensureMinimumSlidesCount(normalized, source, projectName),
+    projectName
+  ).slice(0, MAX_TARGET_SLIDES)
+  const repairedQuality = evaluateSlidesQuality(repaired)
+
+  if (repairedQuality.overall >= QUALITY_FALLBACK_THRESHOLD) {
+    return { slides: repaired, quality: repairedQuality }
+  }
+
+  const fallback = normalizeSlides(
+    ensureMinimumSlidesCount(
+      buildFallbackSlidesFromSource(source, sourceType, projectName),
+      source,
+      projectName
+    ),
+    projectName
+  ).slice(0, MAX_TARGET_SLIDES)
+  const fallbackQuality = evaluateSlidesQuality(fallback)
+
+  if (fallbackQuality.overall >= repairedQuality.overall) {
+    return { slides: fallback, quality: fallbackQuality }
+  }
+  return { slides: repaired, quality: repairedQuality }
+}
+
 const extractSlidesFromAiResponse = (raw: string): unknown[] => {
   const trimmed = raw.trim()
   if (!trimmed) throw new Error('AI 응답이 비어 있습니다')
@@ -1298,11 +1516,19 @@ const deriveProjectName = (sourceType: SourceType, value: string, customName?: s
   return 'Markdown Deck'
 }
 
-const createProject = async (userId: string, name: string, sourceType: SourceType, sourceLabel: string, slides: DeckSlide[]) => {
+const createProject = async (
+  userId: string,
+  name: string,
+  sourceType: SourceType,
+  sourceLabel: string,
+  slides: DeckSlide[],
+  quality?: DeckQualityReport
+) => {
+  const qualityLabel = quality ? ` · Q${quality.overall}` : ''
   const created = await prisma.project.create({
     data: {
       name,
-      description: `${sourceType.toUpperCase()} · ${sourceLabel}`,
+      description: `${sourceType.toUpperCase()} · ${sourceLabel}${qualityLabel}`,
       userId,
       slides: {
         create: slides.map((slide, index) => ({
@@ -1461,17 +1687,32 @@ const handleGenerate = async (
     const customName = typeof req.body?.name === 'string' ? req.body.name : undefined
     const projectName = deriveProjectName(effectiveSourceType, projectNameHint, customName)
 
-    const slides = await withGenerationLock(userId, async () => {
+    const { slides, quality } = await withGenerationLock(userId, async () => {
+      let generatedSlides: DeckSlide[]
       try {
-        return await generateSlidesWithAI(sourceText, effectiveSourceType, projectName)
+        generatedSlides = await generateSlidesWithAI(sourceText, effectiveSourceType, projectName)
       } catch (aiError) {
         console.error(`${effectiveSourceType} AI 생성 실패, 폴백으로 전환:`, aiError)
-        return buildFallbackSlidesFromSource(sourceText, effectiveSourceType, projectName)
+        generatedSlides = buildFallbackSlidesFromSource(sourceText, effectiveSourceType, projectName)
       }
+
+      return applyQualitySelfHealing(
+        generatedSlides,
+        sourceText,
+        effectiveSourceType,
+        projectName
+      )
     })
 
-    const project = await createProject(userId, projectName, effectiveSourceType, sourceLabel, slides)
-    res.json({ project })
+    const project = await createProject(
+      userId,
+      projectName,
+      effectiveSourceType,
+      sourceLabel,
+      slides,
+      quality
+    )
+    res.json({ project, quality })
   } catch (error) {
     if (error instanceof RequestValidationError) {
       return res.status(error.status).json({ error: error.message, code: error.code })

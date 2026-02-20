@@ -39,6 +39,15 @@ interface Project {
   updatedAt: string
 }
 
+interface DeckQualityReport {
+  overall: number
+  structure?: number
+  readability?: number
+  diversity?: number
+  issues: string[]
+  inferred?: boolean
+}
+
 interface SvgTemplate {
   id: string
   fileName: string
@@ -86,6 +95,7 @@ function App() {
 
   const [workspaceLoading, setWorkspaceLoading] = useState(false)
   const [projects, setProjects] = useState<Project[]>([])
+  const [qualityByProject, setQualityByProject] = useState<Record<string, DeckQualityReport>>({})
   const [templates, setTemplates] = useState<SvgTemplate[]>([])
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
 
@@ -111,6 +121,29 @@ function App() {
     return templates.find((template) => template.id === selectedTemplateId)?.name || 'Default'
   }, [selectedTemplateId, templates])
 
+  const extractQualityScore = (description?: string) => {
+    if (!description) return null
+    const matched = description.match(/\bQ(\d{1,3})\b/)
+    if (!matched) return null
+    const score = Number(matched[1])
+    if (!Number.isFinite(score)) return null
+    return Math.max(0, Math.min(100, Math.round(score)))
+  }
+
+  const inferQualityMapFromProjects = (projectList: Project[]) => {
+    const map: Record<string, DeckQualityReport> = {}
+    projectList.forEach((project) => {
+      const score = extractQualityScore(project.description)
+      if (score === null) return
+      map[project.id] = {
+        overall: score,
+        issues: [],
+        inferred: true,
+      }
+    })
+    return map
+  }
+
   const latestProject = projects[0]
   const canGenerate = (
     !isGenerating &&
@@ -134,6 +167,7 @@ function App() {
     setToken(null)
     setUser(null)
     setProjects([])
+    setQualityByProject({})
     setTemplates([])
     setSelectedTemplateId('')
     setSuccessMessage('')
@@ -210,7 +244,9 @@ function App() {
         requestJson<{ templates: SvgTemplate[] }>('/api/svg/templates', { method: 'GET' }, authToken),
       ])
 
-      setProjects(projectsResult.projects || [])
+      const nextProjects = projectsResult.projects || []
+      setProjects(nextProjects)
+      setQualityByProject(inferQualityMapFromProjects(nextProjects))
       setTemplates(templatesResult.templates || [])
       setSelectedTemplateId((prev) => prev || templatesResult.templates?.[0]?.id || '')
     } catch (error) {
@@ -284,6 +320,11 @@ function App() {
       })
 
       setProjects((prev) => prev.filter((project) => project.id !== projectId))
+      setQualityByProject((prev) => {
+        const next = { ...prev }
+        delete next[projectId]
+        return next
+      })
       if (preview?.projectId === projectId) {
         clearPreview()
       }
@@ -395,13 +436,36 @@ function App() {
         payload.fileName = pdfFileName || 'document.pdf'
       }
 
-      const result = await requestJson<{ project: Project }>(endpointByMode[sourceMode], {
+      const result = await requestJson<{ project: Project; quality?: DeckQualityReport }>(endpointByMode[sourceMode], {
         method: 'POST',
         body: JSON.stringify(payload),
       })
 
       setProjects((prev) => [result.project, ...prev.filter((project) => project.id !== result.project.id)])
-      setSuccessMessage(`${modeLabels[sourceMode]} 입력으로 자동 생성을 완료했습니다.`)
+      setQualityByProject((prev) => {
+        const next = { ...prev }
+        if (result.quality) {
+          next[result.project.id] = {
+            ...result.quality,
+            overall: Math.max(0, Math.min(100, Math.round(result.quality.overall))),
+          }
+        } else {
+          const inferred = extractQualityScore(result.project.description)
+          if (inferred !== null) {
+            next[result.project.id] = {
+              overall: inferred,
+              issues: [],
+              inferred: true,
+            }
+          }
+        }
+        return next
+      })
+
+      const qualityLabel = result.quality?.overall !== undefined
+        ? ` (Q${Math.max(0, Math.min(100, Math.round(result.quality.overall)))})`
+        : ''
+      setSuccessMessage(`${modeLabels[sourceMode]} 입력으로 자동 생성을 완료했습니다.${qualityLabel}`)
 
       await exportProjectDeck(result.project.id, { openInPreview: true, download: false, quiet: true })
 
@@ -827,9 +891,19 @@ function App() {
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.25, delay: index * 0.04 }}
                   >
-                    <div>
-                      <strong>{project.name}</strong>
+                    <div className="history-main">
+                      <div className="history-title-row">
+                        <strong>{project.name}</strong>
+                        {qualityByProject[project.id] && (
+                          <span className={`quality-badge ${qualityByProject[project.id].overall >= 75 ? 'high' : qualityByProject[project.id].overall >= 60 ? 'mid' : 'low'}`}>
+                            Q{qualityByProject[project.id].overall}
+                          </span>
+                        )}
+                      </div>
                       <small>{new Date(project.updatedAt).toLocaleString('ko-KR')}</small>
+                      {qualityByProject[project.id]?.issues?.[0] && (
+                        <p className="quality-issue">{qualityByProject[project.id].issues[0]}</p>
+                      )}
                     </div>
 
                     <div className="row-actions">
@@ -872,7 +946,10 @@ function App() {
             )}
 
             {latestProject && (
-              <p className="footnote">최근 생성: <strong>{latestProject.name}</strong> · {latestProject.slides.length} slides</p>
+              <p className="footnote">
+                최근 생성: <strong>{latestProject.name}</strong> · {latestProject.slides.length} slides
+                {qualityByProject[latestProject.id] ? ` · Q${qualityByProject[latestProject.id].overall}` : ''}
+              </p>
             )}
           </motion.section>
         </section>

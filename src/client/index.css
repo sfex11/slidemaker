@@ -486,12 +486,23 @@ small {
 .history-list li {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.7rem;
   padding: 0.7rem;
   border-radius: 11px;
   border: 1px solid rgba(156, 187, 244, 0.2);
   background: rgba(10, 20, 40, 0.6);
+}
+
+.history-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.history-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
 }
 
 .history-list strong {
@@ -503,6 +514,42 @@ small {
   display: block;
   font-size: 0.74rem;
   margin-top: 0.18rem;
+}
+
+.quality-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.1rem 0.42rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.quality-badge.high {
+  color: #02261f;
+  background: rgba(104, 246, 211, 0.9);
+}
+
+.quality-badge.mid {
+  color: #2b2102;
+  background: rgba(255, 220, 124, 0.9);
+}
+
+.quality-badge.low {
+  color: #2e0808;
+  background: rgba(255, 152, 146, 0.9);
+}
+
+.quality-issue {
+  margin: 0.26rem 0 0;
+  max-width: 320px;
+  font-size: 0.7rem;
+  color: var(--text-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .row-actions {
